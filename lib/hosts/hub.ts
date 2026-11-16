@@ -1101,6 +1101,9 @@ function validResult(op: keyof SessionOps, result: unknown, args: unknown[]): bo
     // Media bytes only ever arrive through the blob leg.
     case "readMedia":
       return value instanceof Uint8Array;
+    case "searchSessions":
+      return isRecord(value) && Object.entries(value).every(([id, score]) =>
+        isValidSessionId(id) && typeof score === "number" && Number.isFinite(score));
     // Main uses these paths (spawn cwd, project keys): they must be strings.
     case "validateCwd":
       return isRecord(value) && typeof value.cwd === "string" && typeof value.projectRoot === "string" && (value.projectKey === undefined || typeof value.projectKey === "string");
@@ -1197,6 +1200,7 @@ const ORPHAN_SENSITIVE_OPS: Partial<Record<keyof SessionOps, true>> = { archiveS
 
 /** A clone/fetch may outlast ordinary operations, but preparation still has a bounded deadline. */
 const POOL_PREPARE_TIMEOUT_MS = 10 * 60_000;
+const SESSION_SEARCH_TIMEOUT_MS = 10 * 60_000;
 
 function remoteSessionOps(hostId: string): SessionOps {
   const ops: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
@@ -1206,8 +1210,9 @@ function remoteSessionOps(hostId: string): SessionOps {
         return { ok: false, status: 400, code: "invalid_hash", error: "Invalid media hash" };
       }
       if (ORPHAN_SENSITIVE_OPS[op]) await orphanExit(hostId, String(args[0]));
-      const result = await request(hostId, op, Object.fromEntries(params.map((name, i) => [name, args[i]])),
-        op === "preparePoolProject" ? POOL_PREPARE_TIMEOUT_MS : linkTimings.opTimeoutMs);
+      const timeout = op === "preparePoolProject" ? POOL_PREPARE_TIMEOUT_MS
+        : op === "searchSessions" ? SESSION_SEARCH_TIMEOUT_MS : linkTimings.opTimeoutMs;
+      const result = await request(hostId, op, Object.fromEntries(params.map((name, i) => [name, args[i]])), timeout);
       if (op === "listSessionIdsForRestore") {
         if (Array.isArray(result) && result.every((id) => typeof id === "string" && id.length > 0)) return result;
         throw new HostOpError(502, "host_bad_result", `${labelOf(hostId)} sent an incomplete active-session inventory`);

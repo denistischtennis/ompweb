@@ -10,6 +10,7 @@ import {
   type SearchField,
 } from "./session-search";
 export const MAX_CONTENT_CACHE_ENTRIES = 200;
+export const MAX_SESSION_SEARCH_QUERY_LENGTH = 500;
 
 interface ContentCacheEntry {
   version: string;
