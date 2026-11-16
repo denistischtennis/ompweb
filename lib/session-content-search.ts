@@ -1,10 +1,8 @@
-import { createReadStream, promises as fs } from "fs";
-import { createInterface } from "readline";
-import { listAllSessions } from "./session-reader";
+import { promises as fs } from "fs";
+import { buildSessionContext, getSessionEntriesAsync, listAllSessions } from "./session-reader";
 import {
   compileSearchQuery,
   CONTENT_WEIGHT,
-  FIRST_MESSAGE_WEIGHT,
   scoreSearchFields,
   searchField,
   TITLE_WEIGHT,
@@ -23,30 +21,20 @@ declare global {
 
 const PARSE_CONCURRENCY = 4;
 
-/** User and assistant text only: tool output and thinking would drown real matches. */
+/** Active conversation's user and assistant text only: tool output and thinking would drown real matches. */
 async function extractTranscriptText(filePath: string): Promise<string> {
+  const { messages } = buildSessionContext(await getSessionEntriesAsync(filePath), undefined, {
+    deferThinking: true,
+    deferToolResultImages: true,
+  });
   const parts: string[] = [];
-  const stream = createReadStream(filePath, { encoding: "utf8" });
-  const lines = createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of lines) {
-      // The role sits near the line start; skip tool results (often MBs) unparsed.
-      const head = line.slice(0, 400);
-      if (!head.includes('"type":"message"') || !(head.includes('"role":"user"') || head.includes('"role":"assistant"'))) continue;
-      let content: unknown;
-      try {
-        content = JSON.parse(line)?.message?.content;
-      } catch {
-        continue;
-      }
-      if (typeof content === "string") parts.push(content);
-      else if (Array.isArray(content)) {
-        for (const block of content) if (block?.type === "text" && typeof block.text === "string") parts.push(block.text);
-      }
+  for (const message of messages) {
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    const content = message.content;
+    if (typeof content === "string") parts.push(content);
+    else if (Array.isArray(content)) {
+      for (const block of content) if (block?.type === "text" && typeof block.text === "string") parts.push(block.text);
     }
-  } finally {
-    lines.close();
-    stream.destroy();
   }
   return parts.join("\n");
 }
@@ -101,7 +89,7 @@ export async function* searchSessions(rawQuery: string): AsyncGenerator<Record<s
   for (let i = 0; i < sessions.length; i += PARSE_CONCURRENCY) {
     const scores: Record<string, number> = {};
     await Promise.all(sessions.slice(i, i + PARSE_CONCURRENCY).map(async (session) => {
-      const fields = [searchField(session.name ?? "", TITLE_WEIGHT), searchField(session.firstMessage, FIRST_MESSAGE_WEIGHT)];
+      const fields = [searchField(session.name ?? "", TITLE_WEIGHT)];
       const content = await transcriptField(session.path, cache);
       if (content) fields.push(content);
       const score = scoreSearchFields(fields, query);
