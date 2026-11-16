@@ -1200,7 +1200,7 @@ const ORPHAN_SENSITIVE_OPS: Partial<Record<keyof SessionOps, true>> = { archiveS
 
 /** A clone/fetch may outlast ordinary operations, but preparation still has a bounded deadline. */
 const POOL_PREPARE_TIMEOUT_MS = 10 * 60_000;
-const SESSION_SEARCH_TIMEOUT_MS = 10 * 60_000;
+const SESSION_SEARCH_TIMEOUT_MS = 10_000;
 
 function remoteSessionOps(hostId: string): SessionOps {
   const ops: Record<string, (...args: unknown[]) => Promise<unknown>> = {};

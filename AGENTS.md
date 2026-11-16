@@ -944,8 +944,10 @@ The table is static imports, not a runtime glob, so `bun build --compile` (`scri
   Async restore streams archives with fixed 256 MiB compressed and
   expanded limits, rejecting unsupported IDs before archive consumption.
 - **Not yet remote:** Skills/Plugins/Agents/MCP settings for a host outside the cluster (cluster
-  members run this machine's, see "Cluster configuration"); transcript search reads
-  this machine's files.
+  members run this machine's, see "Cluster configuration").
+- **Transcript search is per host.** `/api/sessions/search` asks each linked daemon to score only
+  its own active conversations, then streams the score maps in sidebar host order. An offline,
+  failing or older daemon contributes no transcript scores; explicit title/name search still works.
 
 #### Local daemon (`docs/specs/2026-10-29-local-daemon-design.md`)
 - **Independent host lifetime.** Installers still install web and host services together; ordinary web restarts leave the daemon's sessions running. Production also starts a missing local host independently through `local-daemon-start.ts`, after preparing its link and probing private control. The singleton prevents duplicates. A coordinated upgrade may restart a shared-installation or incompatible host only after plan approval, with explicit Force approval when sessions may end.

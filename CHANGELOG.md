@@ -9,7 +9,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 ### Fixed
 
 - **GitHub workflow watches no longer regress to stale run states.** Workflow updates retain GitHub's run timestamp and ignore older snapshots for the same or an earlier attempt, so a delayed `queued` response cannot follow a newer `in_progress` delivery.
-- **Keep sidebar transcript results aligned with expandable hits.** Search now ignores abandoned branches and pre-compaction messages that are outside the active conversation.
+- **Keep sidebar transcript results aligned with expandable hits on every linked host.** Each daemon now searches its own active conversations, ignoring abandoned branches and pre-compaction messages.
 
 ## [v0.7.2] - 2026-11-14
 
