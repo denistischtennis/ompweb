@@ -1,5 +1,6 @@
-import { promises as fs } from "fs";
-import { buildSessionContext, getSessionEntriesAsync, listAllSessions } from "./session-reader";
+import { createReadStream, promises as fs } from "fs";
+import { createInterface } from "readline";
+import { listAllSessions } from "./session-reader";
 import {
   compileSearchQuery,
   CONTENT_WEIGHT,
@@ -21,22 +22,131 @@ declare global {
 
 const PARSE_CONCURRENCY = 4;
 
-/** Active conversation's user and assistant text only: tool output and thinking would drown real matches. */
-async function extractTranscriptText(filePath: string): Promise<string> {
-  const { messages } = buildSessionContext(await getSessionEntriesAsync(filePath), undefined, {
-    deferThinking: true,
-    deferToolResultImages: true,
-  });
+interface SearchEntry {
+  id: string;
+  parentId: string | null;
+  type: string;
+  texts?: string[];
+  firstKeptEntryId?: string;
+}
+
+const PROJECTED_LINE_MAX = 64 * 1024;
+const PROJECTED_HEAD_MAX = 4096;
+const JSON_STRING = "((?:\\\\.|[^\"\\\\])*)";
+const TYPE_RE = new RegExp(`\"type\"\\s*:\\s*\"${JSON_STRING}\"`);
+const ID_RE = new RegExp(`\"id\"\\s*:\\s*\"${JSON_STRING}\"`);
+const PARENT_RE = new RegExp(`\"parentId\"\\s*:\\s*(null|\"${JSON_STRING}\")`);
+const ROLE_RE = new RegExp(`\"role\"\\s*:\\s*\"${JSON_STRING}\"`);
+
+function decoded(match: RegExpExecArray | null, group = 1): string | null {
+  if (!match?.[group]) return null;
+  try {
+    return JSON.parse(`"${match[group]}"`) as string;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse large excluded records by their canonical metadata prefix, not their payload. */
+function parseSearchRecord(line: string, legacy: boolean): Record<string, unknown> {
+  if (line.length <= PROJECTED_LINE_MAX) return JSON.parse(line) as Record<string, unknown>;
+  const head = line.slice(0, PROJECTED_HEAD_MAX);
+  const type = decoded(TYPE_RE.exec(head));
+  if (!type || type === "session" || type === "compaction") return JSON.parse(line) as Record<string, unknown>;
+  const role = type === "message" ? decoded(ROLE_RE.exec(head)) : null;
+  if (type === "message" && (!role || role === "user" || role === "assistant")) {
+    return JSON.parse(line) as Record<string, unknown>;
+  }
+  if (legacy) return { type, ...(role ? { message: { role } } : {}) };
+  const id = decoded(ID_RE.exec(head));
+  const parentMatch = PARENT_RE.exec(head);
+  const parentId = parentMatch?.[1] === "null" ? null : decoded(parentMatch, 2);
+  if (!id || !parentMatch || (parentMatch[1] !== "null" && parentId === null)) {
+    return JSON.parse(line) as Record<string, unknown>;
+  }
+  return { type, id, parentId, ...(role ? { message: { role } } : {}) };
+}
+
+function textBlocks(content: unknown): string[] {
+  if (typeof content === "string") return [content];
+  if (!Array.isArray(content)) return [];
+  const texts: string[] = [];
+  for (const block of content) {
+    if (block?.type === "text" && typeof block.text === "string") texts.push(block.text);
+  }
+  return texts;
+}
+
+function activeText(entries: SearchEntry[]): string {
+  const byId = new Map<string, SearchEntry>();
+  for (const entry of entries) byId.set(entry.id, entry);
+  const path: SearchEntry[] = [];
+  const seen = new Set<string>();
+  let current = entries.at(-1);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    path.push(current);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  path.reverse();
+
+  const compactionIdx = path.findLastIndex((entry) => entry.type === "compaction");
+  const firstKeptEntryId = compactionIdx >= 0 ? path[compactionIdx].firstKeptEntryId : undefined;
+  const firstKeptIdx = compactionIdx >= 0
+    ? path.findIndex((entry, index) => index < compactionIdx && entry.id === firstKeptEntryId)
+    : -1;
   const parts: string[] = [];
-  for (const message of messages) {
-    if (message.role !== "user" && message.role !== "assistant") continue;
-    const content = message.content;
-    if (typeof content === "string") parts.push(content);
-    else if (Array.isArray(content)) {
-      for (const block of content) if (block?.type === "text" && typeof block.text === "string") parts.push(block.text);
-    }
+  for (let index = 0; index < path.length; index++) {
+    if (compactionIdx >= 0 && (index === compactionIdx || index < (firstKeptIdx >= 0 ? firstKeptIdx : compactionIdx))) continue;
+    for (const text of path[index].texts ?? []) parts.push(text);
   }
   return parts.join("\n");
+}
+
+/** Active conversation's user and assistant text only: tool output and thinking would drown real matches. */
+async function extractTranscriptText(filePath: string): Promise<string> {
+  const entries: SearchEntry[] = [];
+  const stream = createReadStream(filePath, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let legacy = false;
+  try {
+    for await (const line of lines) {
+      let record: Record<string, unknown>;
+      try {
+        record = parseSearchRecord(line, legacy);
+      } catch {
+        continue;
+      }
+      if (record.type === "title") continue;
+      if (record.type === "session") {
+        legacy = record.version === 1;
+        continue;
+      }
+      if (typeof record.type !== "string") continue;
+      const id = legacy ? `legacy:${entries.length}` : record.id;
+      const parentId = legacy ? entries.at(-1)?.id ?? null : record.parentId;
+      if (typeof id !== "string" || (parentId !== null && typeof parentId !== "string")) continue;
+      const message = record.message && typeof record.message === "object"
+        ? record.message as { role?: unknown; content?: unknown }
+        : null;
+      const role = typeof message?.role === "string" ? message.role : undefined;
+      let firstKeptEntryId = typeof record.firstKeptEntryId === "string" ? record.firstKeptEntryId : undefined;
+      if (legacy && record.type === "compaction" && typeof record.firstKeptEntryIndex === "number") {
+        firstKeptEntryId = entries[record.firstKeptEntryIndex - 1]?.id;
+      }
+      entries.push({
+        id,
+        parentId,
+        type: record.type,
+        ...(role === "user" || role === "assistant" ? { texts: textBlocks(message?.content) } : {}),
+        ...(firstKeptEntryId ? { firstKeptEntryId } : {}),
+      });
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  return activeText(entries);
 }
 
 function touchCacheEntry(cache: Map<string, ContentCacheEntry>, key: string, entry: ContentCacheEntry): void {

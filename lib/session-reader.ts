@@ -507,10 +507,15 @@ function getInFlightEntries(): Map<string, Promise<SessionEntry[]>> {
   return globalThis.__ompEntriesInFlight;
 }
 
-/** Deduplicated session entry read without blob resolution. Concurrent calls
- * for the same file share one parse and resolve to the SAME immutable entry
- * array. Rejections are never memoized. */
-export async function getSessionEntriesAsync(filePath: string): Promise<SessionEntry[]> {
+/** Deduplicated display-path entry read. Semantically identical to
+ * getSessionEntriesForDisplay; concurrent calls for the same file share one
+ * parse and resolve to the SAME entry array (callers must treat it as
+ * immutable, like all cached entry reads). Rejections are never memoized: a
+ * transient failure must not poison later reads. */
+export async function getSessionEntriesForDisplayAsync(
+  filePath: string,
+  options: ResolveBlobOptions = {},
+): Promise<SessionEntry[]> {
   const key = sessionPathKey(filePath);
   const cache = getSessionEntriesCache();
   // Same too-large gate as the sync display read: past the load ceiling the
@@ -533,31 +538,24 @@ export async function getSessionEntriesAsync(filePath: string): Promise<SessionE
     if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
       cache.delete(key);
       cache.set(key, cached);
-      return cached.entries;
+      return toDisplayEntries(cached.entries, options);
     }
   }
 
   const inFlight = getInFlightEntries().get(key);
-  if (inFlight) return inFlight;
+  if (inFlight) return inFlight.then((entries) => toDisplayEntries(entries, options));
 
   // Defer the synchronous parse by one microtask so same-tick callers land
   // on the in-flight map instead of each starting their own parse.
   const parse = Promise.resolve().then(() => loadSessionEntriesCached(filePath));
   getInFlightEntries().set(key, parse);
   try {
-    return await parse;
+    const entries = await parse;
+    return toDisplayEntries(entries, options);
   } finally {
     const map = getInFlightEntries();
     if (map.get(key) === parse) map.delete(key);
   }
-}
-
-/** Deduplicated display-path entry read with blob resolution on private copies. */
-export async function getSessionEntriesForDisplayAsync(
-  filePath: string,
-  options: ResolveBlobOptions = {},
-): Promise<SessionEntry[]> {
-  return toDisplayEntries(await getSessionEntriesAsync(filePath), options);
 }
 
 interface HistoryEntryRange {
