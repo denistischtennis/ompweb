@@ -31,7 +31,7 @@ interface SearchEntry {
 }
 
 const PROJECTED_LINE_MAX = 64 * 1024;
-const SCAN_SLICE = 256 * 1024;
+const SCAN_SLICE = 64 * 1024;
 async function yieldToEventLoop(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setImmediate(resolve);
