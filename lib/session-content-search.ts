@@ -33,9 +33,10 @@ interface SearchEntry {
 const PROJECTED_LINE_MAX = 64 * 1024;
 const PROJECTED_HEAD_MAX = 4096;
 const JSON_STRING = "((?:\\\\.|[^\"\\\\])*)";
-const TYPE_RE = new RegExp(`\"type\"\\s*:\\s*\"${JSON_STRING}\"`);
-const ID_RE = new RegExp(`\"id\"\\s*:\\s*\"${JSON_STRING}\"`);
-const PARENT_RE = new RegExp(`\"parentId\"\\s*:\\s*(null|\"${JSON_STRING}\")`);
+const TYPE_PREFIX_RE = new RegExp(`^\\s*\\{\\s*"type"\\s*:\\s*"${JSON_STRING}"`);
+const ENTRY_PREFIX_RE = new RegExp(
+  `^\\s*\\{\\s*"type"\\s*:\\s*"${JSON_STRING}"\\s*,\\s*"id"\\s*:\\s*"${JSON_STRING}"\\s*,\\s*"parentId"\\s*:\\s*(null|"${JSON_STRING}")`,
+);
 const ROLE_RE = new RegExp(`\"role\"\\s*:\\s*\"${JSON_STRING}\"`);
 
 function decoded(match: RegExpExecArray | null, group = 1): string | null {
@@ -51,17 +52,18 @@ function decoded(match: RegExpExecArray | null, group = 1): string | null {
 function parseSearchRecord(line: string, legacy: boolean): Record<string, unknown> {
   if (line.length <= PROJECTED_LINE_MAX) return JSON.parse(line) as Record<string, unknown>;
   const head = line.slice(0, PROJECTED_HEAD_MAX);
-  const type = decoded(TYPE_RE.exec(head));
+  const type = decoded(TYPE_PREFIX_RE.exec(head));
   if (!type || type === "session" || type === "compaction") return JSON.parse(line) as Record<string, unknown>;
   const role = type === "message" ? decoded(ROLE_RE.exec(head)) : null;
   if (type === "message" && (!role || role === "user" || role === "assistant")) {
     return JSON.parse(line) as Record<string, unknown>;
   }
   if (legacy) return { type, ...(role ? { message: { role } } : {}) };
-  const id = decoded(ID_RE.exec(head));
-  const parentMatch = PARENT_RE.exec(head);
-  const parentId = parentMatch?.[1] === "null" ? null : decoded(parentMatch, 2);
-  if (!id || !parentMatch || (parentMatch[1] !== "null" && parentId === null)) {
+  const prefix = ENTRY_PREFIX_RE.exec(head);
+  const prefixType = decoded(prefix, 1);
+  const id = decoded(prefix, 2);
+  const parentId = prefix?.[3] === "null" ? null : decoded(prefix, 4);
+  if (prefixType !== type || !id || !prefix || (prefix[3] !== "null" && parentId === null)) {
     return JSON.parse(line) as Record<string, unknown>;
   }
   return { type, id, parentId, ...(role ? { message: { role } } : {}) };
@@ -119,7 +121,7 @@ async function extractTranscriptText(filePath: string): Promise<string> {
       }
       if (record.type === "title") continue;
       if (record.type === "session") {
-        legacy = record.version === 1;
+        legacy = record.version == null || record.version === 1;
         continue;
       }
       if (typeof record.type !== "string") continue;
