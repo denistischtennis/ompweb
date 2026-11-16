@@ -31,33 +31,57 @@ interface SearchEntry {
 }
 
 const PROJECTED_LINE_MAX = 64 * 1024;
-function stringEnd(source: string, start: number): number {
+const SCAN_SLICE = 256 * 1024;
+async function yieldToEventLoop(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  await promise;
+}
+
+async function stringEnd(source: string, start: number): Promise<number> {
   if (source[start] !== "\"") return -1;
+  let nextYield = start + SCAN_SLICE;
   for (let index = start + 1; index < source.length; index++) {
     if (source[index] === "\\") index++;
     else if (source[index] === "\"") return index + 1;
+    if (index >= nextYield) {
+      await yieldToEventLoop();
+      nextYield = index + SCAN_SLICE;
+    }
   }
   return -1;
 }
 
-function valueEnd(source: string, start: number): number {
+async function valueEnd(source: string, start: number): Promise<number> {
   if (source[start] === "\"") return stringEnd(source, start);
   if (source[start] === "{" || source[start] === "[") {
     let depth = 0;
+    let nextYield = start + SCAN_SLICE;
     for (let index = start; index < source.length; index++) {
       if (source[index] === "\"") {
-        index = stringEnd(source, index) - 1;
+        index = (await stringEnd(source, index)) - 1;
         if (index < 0) return -1;
       } else if (source[index] === "{" || source[index] === "[") {
         depth++;
       } else if (source[index] === "}" || source[index] === "]") {
         if (--depth === 0) return index + 1;
       }
+      if (index >= nextYield) {
+        await yieldToEventLoop();
+        nextYield = index + SCAN_SLICE;
+      }
     }
     return -1;
   }
   let index = start;
-  while (index < source.length && source[index] !== "," && source[index] !== "}" && source[index] !== "]") index++;
+  let nextYield = start + SCAN_SLICE;
+  while (index < source.length && source[index] !== "," && source[index] !== "}" && source[index] !== "]") {
+    index++;
+    if (index >= nextYield) {
+      await yieldToEventLoop();
+      nextYield = index + SCAN_SLICE;
+    }
+  }
   return index;
 }
 
@@ -72,10 +96,10 @@ function skipSpace(source: string, start: number): number {
 }
 
 /** Start of one direct object's field value, ignoring nested fields. */
-function directValue(source: string, objectStart: number, wanted: string): number {
+async function directValue(source: string, objectStart: number, wanted: string): Promise<number> {
   let index = skipSpace(source, objectStart + 1);
   while (index < source.length && source[index] !== "}") {
-    const keyEnd = stringEnd(source, index);
+    const keyEnd = await stringEnd(source, index);
     if (keyEnd < 0) return -1;
     let key: unknown;
     try {
@@ -87,7 +111,7 @@ function directValue(source: string, objectStart: number, wanted: string): numbe
     if (source[index] !== ":") return -1;
     index = skipSpace(source, index + 1);
     if (key === wanted) return index;
-    index = valueEnd(source, index);
+    index = await valueEnd(source, index);
     if (index < 0) return -1;
     index = skipSpace(source, index);
     if (source[index] === ",") index = skipSpace(source, index + 1);
@@ -96,9 +120,9 @@ function directValue(source: string, objectStart: number, wanted: string): numbe
   return -1;
 }
 
-function directString(source: string, objectStart: number, key: string): string | null {
-  const start = directValue(source, objectStart, key);
-  const end = start >= 0 ? stringEnd(source, start) : -1;
+async function directString(source: string, objectStart: number, key: string): Promise<string | null> {
+  const start = await directValue(source, objectStart, key);
+  const end = start >= 0 ? await stringEnd(source, start) : -1;
   if (end < 0) return null;
   try {
     return JSON.parse(source.slice(start, end)) as string;
@@ -108,23 +132,23 @@ function directString(source: string, objectStart: number, key: string): string 
 }
 
 /** Parse large excluded records structurally without decoding their payload. */
-function parseSearchRecord(line: string, legacy: boolean): Record<string, unknown> {
+async function parseSearchRecord(line: string, legacy: boolean): Promise<Record<string, unknown>> {
   if (line.length <= PROJECTED_LINE_MAX) return JSON.parse(line) as Record<string, unknown>;
   const objectStart = skipSpace(line, 0);
   if (line[objectStart] !== "{") return JSON.parse(line) as Record<string, unknown>;
-  const type = directString(line, objectStart, "type");
+  const type = await directString(line, objectStart, "type");
   if (!type || type === "session" || type === "compaction") return JSON.parse(line) as Record<string, unknown>;
-  const messageStart = type === "message" ? directValue(line, objectStart, "message") : -1;
-  const role = messageStart >= 0 && line[messageStart] === "{" ? directString(line, messageStart, "role") : null;
+  const messageStart = type === "message" ? await directValue(line, objectStart, "message") : -1;
+  const role = messageStart >= 0 && line[messageStart] === "{" ? await directString(line, messageStart, "role") : null;
   if (type === "message" && (!role || role === "user" || role === "assistant")) {
     return JSON.parse(line) as Record<string, unknown>;
   }
   if (legacy) return { type, ...(role ? { message: { role } } : {}) };
-  const id = directString(line, objectStart, "id");
-  const parentStart = directValue(line, objectStart, "parentId");
+  const id = await directString(line, objectStart, "id");
+  const parentStart = await directValue(line, objectStart, "parentId");
   const parentId = parentStart >= 0 && line.startsWith("null", parentStart)
     ? null
-    : directString(line, objectStart, "parentId");
+    : await directString(line, objectStart, "parentId");
   if (!id || parentStart < 0 || (parentId === null && !line.startsWith("null", parentStart))) {
     return JSON.parse(line) as Record<string, unknown>;
   }
@@ -177,7 +201,7 @@ async function extractTranscriptText(filePath: string): Promise<string> {
     for await (const line of lines) {
       let record: Record<string, unknown>;
       try {
-        record = parseSearchRecord(line, legacy);
+        record = await parseSearchRecord(line, legacy);
       } catch {
         continue;
       }
