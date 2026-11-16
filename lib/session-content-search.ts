@@ -31,39 +31,101 @@ interface SearchEntry {
 }
 
 const PROJECTED_LINE_MAX = 64 * 1024;
-const PROJECTED_HEAD_MAX = 4096;
-const JSON_STRING = "((?:\\\\.|[^\"\\\\])*)";
-const TYPE_PREFIX_RE = new RegExp(`^\\s*\\{\\s*"type"\\s*:\\s*"${JSON_STRING}"`);
-const ENTRY_PREFIX_RE = new RegExp(
-  `^\\s*\\{\\s*"type"\\s*:\\s*"${JSON_STRING}"\\s*,\\s*"id"\\s*:\\s*"${JSON_STRING}"\\s*,\\s*"parentId"\\s*:\\s*(null|"${JSON_STRING}")`,
-);
-const ROLE_RE = new RegExp(`\"role\"\\s*:\\s*\"${JSON_STRING}\"`);
+function stringEnd(source: string, start: number): number {
+  if (source[start] !== "\"") return -1;
+  for (let index = start + 1; index < source.length; index++) {
+    if (source[index] === "\\") index++;
+    else if (source[index] === "\"") return index + 1;
+  }
+  return -1;
+}
 
-function decoded(match: RegExpExecArray | null, group = 1): string | null {
-  if (!match?.[group]) return null;
+function valueEnd(source: string, start: number): number {
+  if (source[start] === "\"") return stringEnd(source, start);
+  if (source[start] === "{" || source[start] === "[") {
+    let depth = 0;
+    for (let index = start; index < source.length; index++) {
+      if (source[index] === "\"") {
+        index = stringEnd(source, index) - 1;
+        if (index < 0) return -1;
+      } else if (source[index] === "{" || source[index] === "[") {
+        depth++;
+      } else if (source[index] === "}" || source[index] === "]") {
+        if (--depth === 0) return index + 1;
+      }
+    }
+    return -1;
+  }
+  let index = start;
+  while (index < source.length && source[index] !== "," && source[index] !== "}" && source[index] !== "]") index++;
+  return index;
+}
+
+function skipSpace(source: string, start: number): number {
+  let index = start;
+  while (index < source.length) {
+    const char = source.charCodeAt(index);
+    if (char !== 32 && char !== 9 && char !== 10 && char !== 13) break;
+    index++;
+  }
+  return index;
+}
+
+/** Start of one direct object's field value, ignoring nested fields. */
+function directValue(source: string, objectStart: number, wanted: string): number {
+  let index = skipSpace(source, objectStart + 1);
+  while (index < source.length && source[index] !== "}") {
+    const keyEnd = stringEnd(source, index);
+    if (keyEnd < 0) return -1;
+    let key: unknown;
+    try {
+      key = JSON.parse(source.slice(index, keyEnd));
+    } catch {
+      return -1;
+    }
+    index = skipSpace(source, keyEnd);
+    if (source[index] !== ":") return -1;
+    index = skipSpace(source, index + 1);
+    if (key === wanted) return index;
+    index = valueEnd(source, index);
+    if (index < 0) return -1;
+    index = skipSpace(source, index);
+    if (source[index] === ",") index = skipSpace(source, index + 1);
+    else if (source[index] !== "}") return -1;
+  }
+  return -1;
+}
+
+function directString(source: string, objectStart: number, key: string): string | null {
+  const start = directValue(source, objectStart, key);
+  const end = start >= 0 ? stringEnd(source, start) : -1;
+  if (end < 0) return null;
   try {
-    return JSON.parse(`"${match[group]}"`) as string;
+    return JSON.parse(source.slice(start, end)) as string;
   } catch {
     return null;
   }
 }
 
-/** Parse large excluded records by their canonical metadata prefix, not their payload. */
+/** Parse large excluded records structurally without decoding their payload. */
 function parseSearchRecord(line: string, legacy: boolean): Record<string, unknown> {
   if (line.length <= PROJECTED_LINE_MAX) return JSON.parse(line) as Record<string, unknown>;
-  const head = line.slice(0, PROJECTED_HEAD_MAX);
-  const type = decoded(TYPE_PREFIX_RE.exec(head));
+  const objectStart = skipSpace(line, 0);
+  if (line[objectStart] !== "{") return JSON.parse(line) as Record<string, unknown>;
+  const type = directString(line, objectStart, "type");
   if (!type || type === "session" || type === "compaction") return JSON.parse(line) as Record<string, unknown>;
-  const role = type === "message" ? decoded(ROLE_RE.exec(head)) : null;
+  const messageStart = type === "message" ? directValue(line, objectStart, "message") : -1;
+  const role = messageStart >= 0 && line[messageStart] === "{" ? directString(line, messageStart, "role") : null;
   if (type === "message" && (!role || role === "user" || role === "assistant")) {
     return JSON.parse(line) as Record<string, unknown>;
   }
   if (legacy) return { type, ...(role ? { message: { role } } : {}) };
-  const prefix = ENTRY_PREFIX_RE.exec(head);
-  const prefixType = decoded(prefix, 1);
-  const id = decoded(prefix, 2);
-  const parentId = prefix?.[3] === "null" ? null : decoded(prefix, 4);
-  if (prefixType !== type || !id || !prefix || (prefix[3] !== "null" && parentId === null)) {
+  const id = directString(line, objectStart, "id");
+  const parentStart = directValue(line, objectStart, "parentId");
+  const parentId = parentStart >= 0 && line.startsWith("null", parentStart)
+    ? null
+    : directString(line, objectStart, "parentId");
+  if (!id || parentStart < 0 || (parentId === null && !line.startsWith("null", parentStart))) {
     return JSON.parse(line) as Record<string, unknown>;
   }
   return { type, id, parentId, ...(role ? { message: { role } } : {}) };
