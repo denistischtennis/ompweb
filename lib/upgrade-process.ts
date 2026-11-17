@@ -1142,6 +1142,7 @@ export function cwdOutsideInstall(installDir: string, home = homedir(), temporar
 
 /** Stops install-locking processes one by one; `onlyTreesOf` limits that to those pids and their descendants. Never `taskkill /T`: a tree kill ends a worker that still descends from the target. */
 export async function stopInstallLockingProcesses(installDir: string, sparePids: number[], phase: "tray" | "all", onlyTreesOf?: number[]): Promise<void> {
+  if (phase === "tray" && process.platform !== "win32") return;
   const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0") }));
   const selection = selectInstallLockingProcesses(rows, installDir, sparePids, [process.pid], onlyTreesOf);
   const inPhase = (hit: InstallLockHit) => phase === "all" || hit.kind === "tray";
@@ -1199,11 +1200,13 @@ export function selectOwnedTrayPids(rows: InstallLockRow[], installDir: string, 
 }
 
 export async function findInstallTrayPids(installDir: string, sparePids: number[], serverPids: number[]): Promise<number[]> {
+  if (process.platform !== "win32") return []; // the tray is a Windows program; elsewhere there is nothing to find
   const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0") }));
   return selectOwnedTrayPids(rows, installDir, sparePids, serverPids);
 }
 
 export async function findTraySupervisor(installDir: string, serverPids: number[]): Promise<TraySupervisor | null> {
+  if (process.platform !== "win32") return null;
   const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0"), args: row.args }));
   return traySupervisor(rows, serverPids, installDir);
 }
