@@ -49,6 +49,7 @@ describe("host events bridge", () => {
 
 		const types = events.map(event => event.type);
 		expect(types.indexOf("session_settled")).toBeGreaterThan(types.lastIndexOf("agent_end"));
+		expect(events.filter(event => event.type === "agent_end")).toMatchObject([{ isTerminal: true, yielded: true }]);
 
 		const assistantEnd = events.find(event => event.type === "message_end" && JSON.stringify(event).includes("scripted reply"));
 		const updates = events.filter(event => event.type === "message_update");
@@ -71,6 +72,25 @@ describe("host events bridge", () => {
 		expect(events.find(event => event.type === "message_update")).toMatchObject({
 			message: { role: "assistant", content: expect.any(Array) },
 		});
+	});
+
+	it("sends a loop paused on background work as a non-terminal agent_end, and the run's end as the terminal one", async () => {
+		const { session, events, waitFor } = await bridged([{ content: ["started the job"] }, { content: ["job done"] }]);
+		const job = Promise.withResolvers<string>();
+		session.asyncJobManager?.register("bash", "wait", () => job.promise, { ownerId: session.getAgentId() });
+		await session.prompt("go");
+		await session.waitForIdle();
+
+		const ends = () => events.filter(event => event.type === "agent_end");
+		const paused = { isTerminal: false, yielded: true, awaitingAsyncWork: true };
+		expect(ends()).toMatchObject([paused]);
+		expect(events.some(event => event.type === "session_settled")).toBe(false);
+
+		// The job's result resumes the run; its loop ends the run.
+		job.resolve("done");
+		await waitFor("session_settled");
+		expect(ends()).toMatchObject([paused, { isTerminal: true, yielded: true }]);
+		expect(events.some(event => event.type === "agent_pause")).toBe(false);
 	});
 
 	it("reports session renames", async () => {

@@ -1,8 +1,8 @@
 /**
  * `prompt_result` reporting: every accepted `prompt`/`abort_and_prompt` not answered with `agentInvoked: false`
  * gets exactly one `{t:"prompt_result", id, agentInvoked, status, sessionSettled, error?}` once the work it caused
- * has yielded: at once for local-only slash commands and failures, else after the terminal `agent_end` of the run
- * the prompt started or joined. The host correlates on the cmd `id` instead of guessing who owns an `agent_end`.
+ * has yielded: at once for local-only slash commands and failures, else once the run the prompt started or joined
+ * yields (`agent_pause` with `yielded`, or `agent_end`). The host correlates on the cmd `id` instead of guessing who owns an `agent_end`.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -109,7 +109,7 @@ export class PromptResults {
 
 	/**
 	 * Mark every open prompt aborted after a session transition: transitions detach the agent before aborting it,
-	 * so the interrupted run never publishes a terminal `agent_end` for them.
+	 * so the interrupted run never publishes an `agent_end` for them.
 	 */
 	abortOpen(): void {
 		for (const [ticket, open] of this.#open) {
@@ -119,16 +119,15 @@ export class PromptResults {
 		}
 	}
 
-	/** Track run boundaries; call after the event was sent so `prompt_result` follows its `agent_end`. */
+	/** Track run boundaries; call after the event was sent so `prompt_result` follows its yield. */
 	observe(event: AgentSessionEvent): void {
 		if (event.type === "agent_start") {
 			this.#agentStarts++;
 			this.#refusalAtRunStart = this.#session.costCapRefusal;
 			return;
 		}
-		if (event.type !== "agent_end" || this.#open.size === 0) return;
-		// Older sessions omit `yielded`; only their terminal ends were yields.
-		if (!(event.yielded ?? event.isTerminal !== false)) return;
+		if (this.#open.size === 0) return;
+		if (event.type !== "agent_end" && (event.type !== "agent_pause" || !event.yielded)) return;
 		// A request the cost gate refused during this run is its outcome, whatever message ended it.
 		const outcome = this.#costCapOutcome(this.#refusalAtRunStart) ?? runOutcome(event.messages);
 		// A still-queued steer/follow-up has not been read by the agent yet.

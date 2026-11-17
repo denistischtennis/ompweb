@@ -27,7 +27,7 @@ export function sessionState(session: AgentSession) {
 		sessionName: session.sessionName,
 		autoCompactionEnabled: session.autoCompactionEnabled,
 		queuedMessageCount: session.queuedMessageCount,
-		hasPendingAsyncWork: session.hasPendingAsyncWork(),
+		hasPendingAsyncWork: session.wakeSources !== undefined,
 		isSettled: isSessionSettled(session),
 		queuedMessages: {
 			steering: [...queued.steering],

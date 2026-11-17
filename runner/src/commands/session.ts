@@ -310,7 +310,7 @@ export const sessionCommands: CommandTable = {
 	async edit_message(ctx, args) {
 		const { session } = ctx;
 		const entryId = requiredString("edit_message", args, "entryId");
-		if (session.isBusyForSnapshot || session.hasPendingAsyncWork()) {
+		if (session.isBusyForSnapshot || session.isRunActive) {
 			throw new CommandError("Cannot edit while the agent is running", "session_busy");
 		}
 		const entry = session.sessionManager.getEntry(entryId);

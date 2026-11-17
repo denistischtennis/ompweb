@@ -10,7 +10,8 @@
  * switches to full until the message ends, then back to delta.
  *
  * Events that are not plain AgentSession events:
- *   session_settled            {type}                              the session went quiet after activity ({@link SessionSettleWatcher})
+ *   agent_end                  {type, messages, isTerminal, yielded, awaitingAsyncWork?}  one per stopped model loop: omp's `agent_pause` is `isTerminal: false`, the run's `agent_end` `isTerminal: true`, both via omp's `toWireEvent`
+ *   session_settled            {type}                              the session went quiet after activity (omp's `RpcSessionSettleWatcher`)
  *   available_commands_update  {type, commands}                    at subscribe, on command-metadata change, after a session change
  *   session_info_update        {type, title?, sessionId}           the session name changed (TUI /rename, auto title, host rename)
  *   notice (source "session-persistence")  {type, level, message, source}  store failure (error) or session moved to a new file (warning)
@@ -20,10 +21,10 @@
  */
 import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai";
 import { formatPersistenceFailure, formatPersistenceNotice } from "@oh-my-pi/pi-coding-agent/modes/persistence-failure";
+import { RpcSessionSettleWatcher, watchedScheduledTurnProbe } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-session-settle";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { isSessionSettled, waitForSessionSettlement } from "@oh-my-pi/pi-coding-agent/session/session-settle";
+import { toWireEvent, type WireSessionEvent } from "@oh-my-pi/pi-coding-agent/session/loop-end-wire";
 import { buildAvailableSlashCommands } from "@oh-my-pi/pi-coding-agent/slash-commands/available-commands";
-import { logger } from "@oh-my-pi/pi-utils";
 import type { CommandContext, CommandTable } from "./commands/types";
 import { onClientQueueChange, stampClientMessageId } from "./correlation";
 
@@ -115,7 +116,9 @@ class SessionEventForwarder {
 		return this.#filter ? Array.from(this.#filter) : null;
 	}
 
-	forward(event: AgentSessionEvent): void {
+	forward(sessionEvent: AgentSessionEvent): void {
+		// Loop pauses and the run's end go out as per-loop `agent_end` frames (isTerminal/yielded), the shape ompweb reads.
+		const event = toWireEvent(sessionEvent);
 		const messageId = this.#stamp(event);
 		if (this.#filter && !this.#filter.has(event.type)) return;
 		if (event.type === "message_update" && this.#messageUpdates === "delta") {
@@ -130,7 +133,7 @@ class SessionEventForwarder {
 		this.#output(messageId === undefined ? event : { ...event, messageId });
 	}
 
-	#stamp(event: AgentSessionEvent): string | undefined {
+	#stamp(event: WireSessionEvent): string | undefined {
 		switch (event.type) {
 			case "message_start": {
 				const messageId = this.#mintMessageId();
@@ -161,79 +164,9 @@ class SessionEventForwarder {
 	}
 }
 
-async function nextMacrotask(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	setImmediate(resolve);
-	await promise;
-}
-
-/**
- * Emits `session_settled` once per stretch of agent activity, after the final run yields and background work
- * that could wake the session has drained. Re-checks on every terminal `agent_end` and after session transitions.
- */
-class SessionSettleWatcher {
-	/** Agent activity since the last `session_settled`. */
-	#active = false;
-	#checking = false;
-	#recheck = false;
-	readonly #session: AgentSession;
-	readonly #output: (frame: object) => void;
-	readonly #scheduledTurn: () => boolean;
-
-	constructor(session: AgentSession, output: (frame: object) => void, scheduledTurn: () => boolean) {
-		this.#session = session;
-		this.#output = output;
-		this.#scheduledTurn = scheduledTurn;
-	}
-
-	observe(event: AgentSessionEvent): void {
-		if (event.type === "agent_start") this.#active = true;
-		else if (event.type === "agent_end" && event.isTerminal !== false) void this.check();
-	}
-
-	/** Record activity no `agent_start` announces (a reported pending goal turn), so its stretch still settles. */
-	markActive(): void {
-		this.#active = true;
-	}
-
-	/**
-	 * Settle the current stretch of activity if the session is quiet, waiting out background work that will wake
-	 * it. A live run is left alone: its own terminal `agent_end` triggers the next check.
-	 */
-	async check(): Promise<void> {
-		if (this.#checking) {
-			this.#recheck = true;
-			return;
-		}
-		this.#checking = true;
-		try {
-			do {
-				this.#recheck = false;
-				// Two hops: prompt_result frames for this yield are written one macrotask after it, and
-				// session_settled must follow them.
-				await nextMacrotask();
-				await nextMacrotask();
-				if (this.#active) {
-					await waitForSessionSettlement(this.#session, {
-						isCurrent: () => this.#active,
-						scheduledTurn: this.#scheduledTurn,
-					});
-				}
-			} while (this.#recheck);
-			if (!this.#active || !isSessionSettled(this.#session, this.#scheduledTurn)) return;
-			this.#active = false;
-			this.#output({ type: "session_settled" });
-		} catch (error) {
-			logger.warn("ompweb: session settle check failed", { error: String(error) });
-		} finally {
-			this.#checking = false;
-		}
-	}
-}
-
 interface HostEvents {
 	forwarder: SessionEventForwarder;
-	settle: SessionSettleWatcher;
+	settle: RpcSessionSettleWatcher;
 	emitCommands(): Promise<void>;
 }
 
@@ -244,7 +177,7 @@ const scheduledTurns = new WeakMap<AgentSession, () => boolean>();
 export function subscribeHostEvents(session: AgentSession, send: CommandContext["send"]): () => void {
 	const event = (frame: object) => send({ t: "event", event: frame });
 	const forwarder = new SessionEventForwarder(event);
-	const settle = new SessionSettleWatcher(session, event, () => scheduledTurns.get(session)?.() ?? false);
+	const settle = new RpcSessionSettleWatcher(session, event, () => scheduledTurns.get(session)?.() ?? false);
 	const emitCommands = async () => {
 		event({ type: "available_commands_update", commands: await buildAvailableSlashCommands(session) });
 	};
@@ -282,19 +215,15 @@ export function subscribeHostEvents(session: AgentSession, send: CommandContext[
  */
 export function scheduledTurnProbe(session: AgentSession, pending: () => boolean): () => boolean {
 	scheduledTurns.set(session, pending);
-	return () => {
-		const isPending = pending();
-		if (isPending) bridges.get(session)?.settle.markActive();
-		return isPending;
-	};
+	return watchedScheduledTurnProbe(pending, () => bridges.get(session)?.settle);
 }
 
-/** Re-check settlement where no terminal `agent_end` will (an abandoned goal turn, a prompt that settled without a run). */
+/** Re-check settlement where no run `agent_end` will (an abandoned goal turn, a prompt that settled without a run). */
 export function checkSettled(session: AgentSession): void {
 	void bridges.get(session)?.settle.check();
 }
 
-/** After new/switch/branch/fork/open session: the detached run sends no terminal `agent_end`, and the command catalog may differ. */
+/** After new/switch/branch/fork/open session: the detached run sends no `agent_end`, and the command catalog may differ. */
 export async function afterSessionChange(session: AgentSession): Promise<void> {
 	const bridge = bridges.get(session);
 	if (!bridge) return;
