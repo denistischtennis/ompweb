@@ -120,7 +120,17 @@ export function writeHostUpdateJson(path: string, value: unknown): void {
   if (existsSync(path)) assertOwnedPath(path);
   const temporary = `${path}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(value), { mode: 0o600, flag: "wx" });
-  try { renameSync(temporary, path); } finally { rmSync(temporary, { force: true }); }
+  try { replaceFileSync(temporary, path); } finally { rmSync(temporary, { force: true }); }
+}
+/** Renames `temporary` over `path`. On Windows a concurrent reader of `path` can briefly refuse the replacement: retry, never unlink the previous complete file. */
+export function replaceFileSync(temporary: string, path: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try { return renameSync(temporary, path); }
+    catch (error) {
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "") || attempt >= 20) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
 }
 
 export type HostUpdateDecision = "commit" | "cancel";

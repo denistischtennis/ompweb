@@ -9,6 +9,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 ### Fixed
 
 - **In-app updates can replace an npm-global Windows install started by the tray.** The update stops the tray program in the package and any node or bun process still using that install, without ending the update itself, and runs the install from outside the package so Windows can rename it. When the tray started the server, it is started again in the logged-on session and starts the one server; otherwise the server is started directly and still told which install to serve.
+- **Windows updates no longer fail when the update status is read while it is written.** Host update state, the server worker's status and upgrade plans retry their atomic replacement for a moment when a concurrent reader holds the file, as the server's own update state already did.
 - **GitHub workflow watches no longer regress to stale run states.** Workflow updates retain GitHub's run timestamp and ignore older snapshots for the same or an earlier attempt, so a delayed `queued` response cannot follow a newer `in_progress` delivery.
 - **Keep sidebar transcript results aligned with expandable hits on every linked host.** Each daemon now searches its own active conversations, ignoring abandoned branches and pre-compaction messages.
 
