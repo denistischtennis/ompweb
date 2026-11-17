@@ -251,10 +251,14 @@ function liveClaim(): { id: string | undefined; target: HostUpdateTarget } | nul
 // An omp update keeps its own record. status.json belongs to the ompweb update that wrote it (a coordinated upgrade
 // verifies its receipt there), so an omp update never writes it; the claim lock keeps the two from running together.
 const OMP_STATE = "omp-update.json";
+/** How many superseded attempts' ids the record keeps: a replay of an older one is the same as any unknown id. */
+const OMP_EARLIER_MAX = 32;
 interface OmpUpdateState {
   operation: HostUpdateOperation;
   startedAt: number;
   daemonPid: number;
+  /** Ids of the attempts `operation` superseded, oldest first (at most OMP_EARLIER_MAX): a replay of one is `operation_conflict`, not a new install. */
+  earlier?: string[];
 }
 function readOmpUpdate(): OmpUpdateState | null {
   const root = hostUpdateRoot();
@@ -266,7 +270,12 @@ function readOmpUpdate(): OmpUpdateState | null {
   if (!isRecord(state) || !isRecord(state.operation) || state.operation.target !== "omp" || !["running", "failed", "succeeded"].includes(String(state.operation.state))
     || typeof state.operation.id !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(state.operation.id) || typeof state.operation.version !== "string" || !HOST_VERSION_PATTERN.test(state.operation.version)
     || typeof state.startedAt !== "number" || !Number.isFinite(state.startedAt) || typeof state.daemonPid !== "number") throw new Error("Invalid omp update status");
-  return state as unknown as OmpUpdateState;
+  const earlier = Array.isArray(state.earlier) ? state.earlier.filter((id): id is string => typeof id === "string" && /^[a-zA-Z0-9-]{1,80}$/.test(id)).slice(-OMP_EARLIER_MAX) : [];
+  return { ...state, earlier } as unknown as OmpUpdateState;
+}
+/** The stored omp record, null when there is none or it is unreadable (an unreadable one never blocks an update, and keeps no history). */
+function ompUpdateRecord(): OmpUpdateState | null {
+  try { return readOmpUpdate(); } catch { return null; }
 }
 function finishOmpUpdate(id: string, error?: string): void {
   const state = readOmpUpdate();
@@ -456,7 +465,8 @@ function assertMatchingHostUpdate(descriptor: HostUpdateDescriptor, target: Host
  * claim, so it never runs beside an ompweb update (and refuses, with its own blocker code, while one is active or
  * unsettled), but keeps its own record (OMP_STATE), never ompweb's status.json. A force, a phase or an approved pin (all
  * about replacing the ompweb install) are refused. A caller's `operationId` names this one update: a replay of it returns
- * the stored operation whatever its state, and an id that names another version or an ompweb update is a conflict.
+ * the stored operation whatever its state; an id that names another version or an ompweb update, or that an earlier attempt
+ * used and a later one superseded (the record keeps the last OMP_EARLIER_MAX), is `operation_conflict`.
  */
 async function startOmpUpdate(version: string, request: HostUpdateRequest): Promise<{ accepted: true; operation: HostUpdateOperation }> {
   if (request.force || request.phase || request.releasePin || request.requireReleasePin || request.targetCompatibility) throw new HostUpdateError("invalid_request", "An omp update takes only a version", 400);
@@ -467,6 +477,7 @@ async function startOmpUpdate(version: string, request: HostUpdateRequest): Prom
       return { accepted: true, operation: recorded };
     }
     if (getHostUpdateOperation()?.id === request.operationId) throw new HostUpdateError("operation_conflict", "That operation id already names a different host update");
+    if (ompUpdateRecord()?.earlier?.includes(request.operationId)) throw new HostUpdateError("operation_conflict", "That omp update operation was superseded by a later attempt");
   }
   const refused = ompUpdateBlocker();
   if (refused) throw new HostUpdateError(refused.code, refused.message, refused.code === "updates_disabled" ? 403 : 409);
@@ -477,7 +488,9 @@ async function startOmpUpdate(version: string, request: HostUpdateRequest): Prom
     if (!omp.updateAvailable || omp.availableVersion !== version) throw new HostUpdateError("candidate_changed", "The available omp update changed; refresh host updates");
     if (!omp.canUpdate) throw new HostUpdateError("update_blocked", omp.blockedReason || "This omp update is blocked");
     const operation: HostUpdateOperation = { id, target: "omp", version, state: "running" };
-    writeHostUpdateJson(join(root, OMP_STATE), { operation, startedAt: Date.now(), daemonPid: process.pid } satisfies OmpUpdateState);
+    const previous = ompUpdateRecord();
+    const earlier = previous ? [...(previous.earlier ?? []), previous.operation.id].slice(-OMP_EARLIER_MAX) : [];
+    writeHostUpdateJson(join(root, OMP_STATE), { operation, startedAt: Date.now(), daemonPid: process.pid, earlier } satisfies OmpUpdateState);
     void installOmpRunner(`v${version}`)
       .then(() => undefined, messageOf)
       .then((failure) => finishOmpUpdate(id, failure))
