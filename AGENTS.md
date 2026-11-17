@@ -66,12 +66,20 @@ Shared foundations in `lib/omp/`:
 - `paths.ts` — Node port of omp's directory resolution (`~/.omp/agent`,
   XDG, session dir slugs) and `sessionLocalRoot`, omp's `local://` root rule.
 - `omp-cli.ts` — locate/probe the `ompweb-omp` binary (`resolveOmpBin`,
-  `getOmpVersion`): `OMP_WEB_OMP_BIN`, else a source checkout's `runner/release/`, else the fetched copy
-  (`fetchedOmpBin`: beside a compiled binary, otherwise `<agentDir>/omp-web/omp/<version>/`).
+  `getOmpVersion`): `OMP_WEB_OMP_BIN`, else a source checkout's `runner/release/`, else the runner "Update omp" pointed at
+  (the pointer `<agentDir>/omp-web/omp/<ompweb version>/current.json` `{ tag, path, sha256 }`, trusted only while `path` is
+  that version's own `<omp tag>/ompweb-omp[.exe]` and the file still has the recorded SHA-256; read on every call, hashed again
+  only when the pointer or file changes), else the fetched copy (`fetchedOmpBin`: beside a compiled binary, otherwise
+  `<agentDir>/omp-web/omp/<version>/`). A new ompweb version has a new directory, so it falls back to its own release's runner.
 - `runner-fetch.ts` — `fetchOmpRunner`/`ensureOmpRunner`/`ompweb fetch-omp`: downloads this version's
   `ompweb-omp-<platform>` from its own GitHub release (repo from `package.json` `repository`, `lib/release-repo.ts`),
   checks it against the release's `ompweb-omp.sha256` and writes it atomically. The web server and the daemon run it in
-  the background at start when the runner is missing. There are no runner npm packages.
+  the background at start when the runner is missing. There are no runner npm packages. The same download and checks serve
+  **runner-only releases** (`runner-<ompweb version>-<omp tag>`, `.github/workflows/omp-runner-release.yml`):
+  `latestOmpRunnerRelease` lists them (newest by the omp tag's stamp; cached 5 min), `installOmpRunner` writes the runner as a
+  new file `<omp tag>/ompweb-omp[.exe]` (never over a runner a session may run: Windows refuses that), probes it
+  (`--version` names the tag, `--smoke-test`) and only then writes the pointer; any failure leaves the pointer as it was.
+  `sweepOmpRunners` (daemon start) removes the other tag directories.
 - `rpc-process.ts` — process + NDJSON channel layer (`RpcProcess`; `rpc-*` names are historical, the wire is the `ompweb-omp` channel of `docs/specs/2026-11-12-omp-runner-design.md`).
 - `rpc-transport.ts` — `RpcTransport`: the byte pipe under `RpcProcess`
   (`spawnLocalRpcTransport` for a local child; `RemoteRpcTransport` in
@@ -173,8 +181,8 @@ lib/
     cluster-config-server.ts main side: `currentClusterConfig` (the manifest cached per fingerprint, one build at a time, `omp plugin list` cached 120 s), `clusterConfigVersion`, `admitClusterMember`, `configErrorResponse`; used by the two `app/api/hosts/cluster-config/` routes and `hub.ts`
     daemon-cluster-config.ts daemon side: `createClusterConfig` (`ensure`/`apply`/`restore`/`state`/`holds`/`stop`): download, verify, apply whole or not at all, the member's backup (`own-config/`), plugins, leaving; Node only, relative imports
     host-bearer.ts     `hostFromBearer`: the host an `Authorization: Bearer <host token>` request names, or the 401/503 answer; used by `admitClusterMember`
-    update-types.ts    shared per-host software status and operation contract
-    updates.ts         daemon-side version checks, compatibility gate and durable update state
+    update-types.ts    shared per-host software status and operation contract (targets `ompweb` and `omp`)
+    updates.ts         daemon-side version checks, compatibility gate and durable update state; the `omp` target (`evaluateOmpUpdate`, `startOmpUpdate`) runs in the daemon with no worker
     update-worker.ts   host-only install/restart helper; never starts or stops the web-server service
   github/              GitHub agent tools (server only; spec `docs/specs/2026-11-13-github-watch-tool-design.md`)
     gh.ts              the server's `gh` runner: `GhRunner`, `checkGh` (60 s login cache), target parsing; env from `createChildProcessEnvironment`
@@ -296,6 +304,8 @@ scripts/
   build-binary.ts     `npm run build:binary`: compiles server/binary.ts (NODE_ENV define, no .env/bunfig autoload) into release/ompweb-<os>-<arch>/ beside dist/, public/, the KaTeX files, the omp runner (`ompweb-omp`, built first by `runner/scripts/build-binary.ts`; not with `--no-runner`, which releases use: they attach the runners as separate assets) and the licenses; archives it
   build-release-binaries.sh  the five release targets (one list), run by publish.yml and prerelease.yml (a prerelease per verified `main` commit, titled by build time; one concurrency group per commit, so no commit's run is dropped)
   licenses.ts         the release's `licenses/`: license files of every npm package the server and client bundles hold (Bun.build metafiles; build-client.ts writes build/client-packages.json) and `bun-LICENSE-<version>.md`, the vendored license of the embedded Bun runtime. Bumping Bun: vendor its LICENSE.md for the new version, or build-binary.ts stops
+
+.github/workflows/omp-runner-release.yml  runner-only releases (see "Updates"): on `omp-build` from the fork or by hand, builds each listed ompweb release's `runner/` against the omp build and publishes prerelease `runner-<ompweb version>-<omp tag>`; `publish.yml` and `prerelease.yml` build their runners against the newest build of the fork's `oml` branch
 
 dist/                 build output (git-ignored, shipped in the package); the production server reads index.html and assets from here
 bunfig.toml           Bun dev-server bundling: tailwind plugin and the OMP_WEB_PUBLIC_* inlining
@@ -1766,7 +1776,8 @@ during the wait.
 
 ### Updates: web server versus host software
 - **Settings → System** prepares and reviews a durable server-and-host upgrade plan, including owned compiled releases. `POST /api/app-update {action:"prepare"}` returns the plan; commit requires `{action:"commit",attemptId,approval:{planId,force}}`. Approval is bound to release identity and the registered-host/session snapshot. An incompatible host without a verified recovery path blocks server cutover.
-- **Settings → Hosts** manages individual daemons, including **This machine**; omp updates with ompweb. Normal `POST {target:"ompweb",version}` does not interrupt activity. `force:true` requires distinct GUI confirmation and may end sessions/subagents. Machine-readable `canForceUpdate` and blockers govern the action, never English message parsing. Force does not waive integrity, ownership, process identity, disabled updates, local drains or service permissions.
+- **Settings → Hosts** manages individual daemons, including **This machine**. Normal `POST {target:"ompweb",version}` does not interrupt activity. `force:true` requires distinct GUI confirmation and may end sessions/subagents. Machine-readable `canForceUpdate` and blockers govern the action, never English message parsing. Force does not waive integrity, ownership, process identity, disabled updates, local drains or service permissions.
+- **Update omp** (`POST {target:"omp",version}`, no `force`; same auth/origin checks and `OMP_WEB_DISABLE_AUTOUPDATE` gate). Between ompweb releases a host gets a newer omp from a runner-only release for its own ompweb version: `checkUpdates` reports `omp: { currentVersion, availableVersion, updateAvailable, canUpdate, blockedReason, blockers, operation, runnerChannel: true }` (a daemon without `runnerChannel` reports only a version, and the hub keeps just that); available when the newest such release's omp tag is another build and, where both have a stamp, a newer one (never a downgrade). The daemon installs it in-process (no worker, no restart; `hostUpdateBlocksNewWork` is false for it): running sessions keep their binary, new spawns use the pointed one, and an ompweb update drops back to its own release's runner. **It never touches ompweb's record.** It keeps its own (`<agent dir>/omp-web/host-update/omp-update.json`, reported as `omp.operation`; `HostUpdateInfo.operation` stays ompweb's, which a coordinated upgrade verifies in `status.json`) and takes the shared claim lock (`lock.json`, which now records its `target`), so the two never run together: an omp update is refused with blocker/error code `ompweb_update_active` while an ompweb operation is running (prepared, committing and recovery-required included) or any ompweb claim is live, and `omp_install_active` while another omp install runs; an ompweb update is blocked by `omp_install_active` (its start fails `update_in_progress`) while an omp install holds the claim. Also blocked by the disable switch, or by an omp the install does not choose (`OMP_WEB_OMP_BIN`, a source checkout: `unsupported_install`). The hub answers a blocked omp POST with the first blocker's code. The fork's `oml` branch (upstream releases and every carried patch, merged) sends `omp-build` to this repository after each green build.
 - **Recovery plane.** Modern candidates may acknowledge an approved future server protocol through an operation-bound preflight nonce and maintenance receipt. Legacy recovery admits only a fixed bootstrap on one operation-bound runner channel, never general old application traffic. Windows uses native process/service/task handling. Old daemons copy only `update-worker.ts`; its startup must work without sibling modules and load shared lifecycle code from verified sources before replacing an install.
 - **Completion and rollback.** `upgrade-plan.ts`, `self-update.ts` and `server-update-worker.ts` persist progress; POST acceptance and shell output are not success. Verify the expected release, live process identity and operation/boot receipt after reconnect. Retain the prior install until healthy, and report partial recovery explicitly. See `docs/superpowers/specs/2026-11-14-coordinated-gui-upgrades-design.md` when changing upgrade or bootstrap contracts.
 - `/api/omp-update` keeps only `restart`, an explicit server-side maintenance API for existing callers. The settings UI and AppShell no longer use it as a global update control or send a server-wide session restart after a host update.

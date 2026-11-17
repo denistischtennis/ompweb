@@ -40,18 +40,19 @@ jobs:
 
       - run: npm ci
       - run: npm run build
-      # The omp the runners compile against: the fork's newest integration build, not runner/omp-build.json's pin
-      # (not committed back). No such release or a runner that fails tsc against it fails the release.
-      - name: Find the newest omp integration build
+      # The omp the runners compile against: the newest build of the fork's `oml` branch (upstream releases and every carried
+      # patch, merged), not runner/omp-build.json's pin (not committed back). No such release or a runner that fails tsc
+      # against it fails the release.
+      - name: Find the newest omp build of oml
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          sha=$(gh api repos/ompweb-dev/oh-my-pi/commits/integration-release --jq .sha)
+          sha=$(gh api repos/ompweb-dev/oh-my-pi/commits/oml --jq .sha)
           tag=$(gh api --paginate 'repos/ompweb-dev/oh-my-pi/releases?per_page=100' --jq '.[].tag_name' \
             | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-int\.[0-9]{12}\.g${sha:0:7}\$" | head -n 1 || true)
           if [ -z "$tag" ]; then
-            echo "::error::ompweb-dev/oh-my-pi has no integration release for integration-release ($sha)"
+            echo "::error::ompweb-dev/oh-my-pi has no integration release for oml ($sha)"
             exit 1
           fi
           echo "OMP_TAG=$tag" >> "$GITHUB_ENV"

@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
-import { existsSync, realpathSync, statSync } from "fs";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json";
@@ -41,12 +42,85 @@ const MISS_TTL_MS = 30_000;
 // Launchers can stay unchanged while their underlying package is updated.
 const VERSION_TTL_MS = 5 * 60_000;
 
+/** An omp integration build, `v<ompVersion>-int.<YYYYMMDDHHMM>.g<sha7>`: the tag of a fork release and the omp tag in a runner-only release's own tag. */
+export const OMP_TAG = /^v\d+\.\d+\.\d+-int\.\d{12}\.g[0-9a-f]{7}$/;
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+/** This ompweb version's runner directory under the agent dir (an npm install's package dir may not be writable): the
+ * fetched copy of its own release's runner, and one `<omp tag>/ompweb-omp` per runner-only release with the pointer
+ * `current.json` that names the one in use. */
+export function ompRunnerRoot(version = packageJson.version): string {
+  return join(getAgentDir(), "omp-web", "omp", version);
+}
+/** `tag` must already be an OMP_TAG: it becomes a path segment. */
+export function ompRunnerPath(tag: string, version = packageJson.version): string {
+  return join(ompRunnerRoot(version), tag, BIN_NAME);
+}
+
 /** Where this install keeps the runner it fetches from its own release (lib/omp/runner-fetch.ts): beside a compiled
- * ompweb, else in a per-version cache under the agent dir (an npm install's package dir may not be writable). */
+ * ompweb, else in ompRunnerRoot. */
 export function fetchedOmpBin(): string {
   return typeof Bun !== "undefined" && Bun.isStandaloneExecutable
     ? join(dirname(process.execPath), BIN_NAME)
-    : join(getAgentDir(), "omp-web", "omp", packageJson.version, BIN_NAME);
+    : join(ompRunnerRoot(), BIN_NAME);
+}
+
+/** What "Update omp" installed: a runner of a runner-only release (lib/omp/runner-fetch.ts `installOmpRunner`) and the SHA-256 it was verified with. */
+export interface OmpPointer {
+  tag: string;
+  path: string;
+  sha256: string;
+}
+
+/** The pointer of `version`, or null when absent, malformed, or naming anything but that version's own `<tag>/ompweb-omp`. */
+export function readOmpPointer(version = packageJson.version): OmpPointer | null {
+  try {
+    const value: unknown = JSON.parse(readFileSync(join(ompRunnerRoot(version), "current.json"), "utf8"));
+    if (typeof value !== "object" || value === null) return null;
+    const { tag, path, sha256 } = value as Record<string, unknown>;
+    return typeof tag === "string" && OMP_TAG.test(tag) && typeof sha256 === "string" && SHA256_HEX.test(sha256) && path === ompRunnerPath(tag, version) ? { tag, path, sha256 } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Atomically points `version` at an installed runner: a reader sees the old pointer or the new one. */
+export function writeOmpPointer(pointer: OmpPointer, version = packageJson.version): void {
+  const file = join(ompRunnerRoot(version), "current.json");
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporary, JSON.stringify(pointer), { flag: "wx" });
+  renameSync(temporary, file);
+}
+
+function fileSha256(path: string): string {
+  const hash = createHash("sha256");
+  const fd = openSync(path, "r");
+  try {
+    const chunk = Buffer.allocUnsafe(1 << 20);
+    for (let read = readSync(fd, chunk, 0, chunk.length, null); read > 0; read = readSync(fd, chunk, 0, chunk.length, null)) hash.update(chunk.subarray(0, read));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+// The verdict on the pointed binary, per pointer and file identity: a ~120 MB hash is paid again only when either changes.
+let pointerVerdict: { key: string; fingerprint: string; ok: boolean } | null = null;
+
+/** The pointed runner while it still is the file whose SHA-256 the pointer records; null for the override and a source
+ * checkout (they name their own runner), a missing, replaced or damaged binary, and no pointer. */
+function pointedOmpBin(): string | null {
+  const pointer = readOmpPointer();
+  if (!pointer || process.env.OMP_WEB_OMP_BIN || sourceCheckoutOmpBin()) return null;
+  const fingerprint = versionFingerprint(pointer.path);
+  if (!fingerprint) return null;
+  const key = `${pointer.tag}:${pointer.sha256}`;
+  if (pointerVerdict?.key !== key || pointerVerdict.fingerprint !== fingerprint) {
+    let ok = false;
+    try { ok = fileSha256(pointer.path) === pointer.sha256; } catch { /* unreadable: not the recorded file */ }
+    pointerVerdict = { key, fingerprint, ok };
+  }
+  return pointerVerdict.ok ? pointer.path : null;
 }
 
 /** A source checkout builds its runner (`bun runner/scripts/build-binary.ts`) instead of fetching one. */
@@ -73,11 +147,14 @@ function probeOmpBin(): string | null {
 /** What every caller that needs omp reports when resolveOmpBin finds none. */
 export const OMP_NOT_FOUND = "ompweb's omp binary (ompweb-omp) not found. Reinstall ompweb or set OMP_WEB_OMP_BIN.";
 
-/** Resolve ompweb's omp binary: OMP_WEB_OMP_BIN override, else the source checkout's build or the fetched runner
- * (see probeOmpBin). Returns null when none exists. A hit is cached while the file exists; a miss is re-probed after
- * MISS_TTL_MS, or at once with `fresh` (after a fetch). */
+/** Resolve ompweb's omp binary: OMP_WEB_OMP_BIN override, else the source checkout's build, else the runner "Update omp"
+ * pointed at (pointedOmpBin), else the fetched runner (see probeOmpBin). Returns null when none exists. A hit is cached
+ * while the file exists; a miss is re-probed after MISS_TTL_MS, or at once with `fresh` (after a fetch). The pointer is read
+ * on every call, so a new session after an update starts the new runner and running ones keep theirs. */
 export function resolveOmpBin(fresh = false): string | null {
   if (fresh) binMissAt = 0;
+  const pointed = pointedOmpBin();
+  if (pointed) return pointed;
   // A global Bun/npm update can replace or remove its launcher while this
   // server process is still alive. Never keep returning a stale cache entry.
   if (cachedBin && existsSync(cachedBin)) return cachedBin;

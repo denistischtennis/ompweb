@@ -80,7 +80,8 @@ mode. A session started from the runner's TUI connects to the daemon's Unix
 socket and shows up live in the web; dialogs open on both sides and the first
 answer wins. Each ompweb release attaches its runners (`ompweb-omp-<platform>`),
 and every install downloads the one of its own version
-(`lib/omp/runner-fetch.ts`), so omp updates with ompweb. The design and the wire are in
+(`lib/omp/runner-fetch.ts`), so omp updates with ompweb. Between releases, "Update omp" installs a newer runner from
+a runner-only release of the host's own ompweb version (AGENTS.md, "Updates"). The design and the wire are in
 `docs/specs/2026-11-12-omp-runner-design.md`; the fork build in
 `docs/specs/2026-11-12-omp-build-in-ompweb-design.md`.
 

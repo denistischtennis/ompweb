@@ -6,6 +6,10 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ## [Unreleased]
 
+### Added
+
+- **Update omp on a host without a new ompweb release.** Settings → Hosts shows "Update omp to …" for a host whose ompweb version has a newer runner-only release (`runner-<ompweb version>-<omp tag>`, built by `omp-runner-release.yml` from each green build of the fork's `oml` branch). The daemon downloads the runner, checks its SHA-256, runs `--version` and `--smoke-test` on it, and only then points new sessions at it; running sessions are not interrupted and an ompweb update returns to its own release's runner. An omp update keeps its own record and never touches an ompweb update's: the two never run together, and each is refused with a machine-readable blocker (`ompweb_update_active`, `omp_install_active`) while the other runs. Releases and prereleases now build their runners against the newest `oml` build.
+
 ### Fixed
 
 - **GitHub workflow watches no longer regress to stale run states.** Workflow updates retain GitHub's run timestamp and ignore older snapshots for the same or an earlier attempt, so a delayed `queued` response cannot follow a newer `in_progress` delivery.
