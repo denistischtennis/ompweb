@@ -1032,7 +1032,7 @@ export async function restartUpgradeProcess(plan: UpgradeProcess, launch: Upgrad
   return instance.pid ?? undefined;
 }
 
-export interface InstallLockRow { pid: number; ppid: number; exe: string; command: string }
+export interface InstallLockRow { pid: number; ppid: number; exe: string; command: string; args?: string[] }
 export interface InstallLockHit { pid: number; kind: "tray" | "runtime" }
 export interface InstallLockSelection { stop: InstallLockHit[]; blocked: InstallLockHit[] }
 
@@ -1139,4 +1139,40 @@ export async function stopInstallLockingProcesses(installDir: string, sparePids:
     await signalProcess(hit.pid, "SIGTERM");
     await waitStopped(hit.pid);
   }
+}
+
+export interface TraySupervisor { exe: string; args: string[] }
+export type ServerRestartChoice = { kind: "tray"; command: string; args: string[]; cwd: string } | { kind: "direct" }
+
+/** The tray that started one of `serverPids`, if its image or script is this install. Any other tray is not the supervisor. */
+export function traySupervisor(rows: InstallLockRow[], serverPids: number[], installDir: string): TraySupervisor | null {
+  const root = installKey(installDir);
+  if (!root) return null;
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  for (const pid of serverPids) {
+    for (const ancestor of ancestorsOf(rows, pid)) {
+      const row = byPid.get(ancestor);
+      if (!row || lockKind(row, root) !== "tray") continue;
+      const args = row.args ?? row.command.split("\0").filter((arg) => arg && arg !== row.exe);
+      return { exe: row.exe, args };
+    }
+  }
+  return null;
+}
+
+/** Tray-supervised: start only the tray from the new install (it starts the server). Otherwise the worker starts the server. */
+export function serverRestartChoice(tray: TraySupervisor | null, installDir: string, cwd: string): ServerRestartChoice {
+  if (!tray) return { kind: "direct" };
+  const name = slash(tray.exe).split("/").pop()?.toLowerCase() ?? "";
+  const exeArg = (arg: string) => /omp-web-tray\.exe$/i.test(slash(arg));
+  const scriptArg = (arg: string) => /omp-web-tray\.ps1$/i.test(slash(arg));
+  if (name === "omp-web-tray.exe" || tray.args.some(exeArg)) {
+    return { kind: "tray", command: join(installDir, "bin", "omp-web-tray.exe"), args: tray.args.filter((arg) => !exeArg(arg)), cwd };
+  }
+  return { kind: "tray", command: tray.exe, args: tray.args.map((arg) => scriptArg(arg) ? join(installDir, "scripts", "windows", "omp-web-tray.ps1") : arg), cwd };
+}
+
+export async function findTraySupervisor(installDir: string, serverPids: number[]): Promise<TraySupervisor | null> {
+  const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0"), args: row.args }));
+  return traySupervisor(rows, serverPids, installDir);
 }

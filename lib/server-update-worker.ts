@@ -15,7 +15,7 @@ import { assertOwnedPath, HOST_VERSION_PATTERN, hostLaunch, moveHostRelease, sha
 import { getAgentDir } from "./omp/paths";
 import { isProcessAlive } from "./process-identity";
 import { atomicWrite, attemptPath, isActiveLease, leasePath, markerPath, patchStatus, readStateJson, removeSecureFile, renewLease, secureRegularFile, statusPath, type SelfUpdateStage, type StoredStatus } from "./self-update-state";
-import { inspectUpgradeProcess, installSpawnCwd, launchDetachedUpgrade, restartUpgradeProcess, stopInstallLockingProcesses, stopUpgradeProcess, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
+import { cwdOutsideInstall, findTraySupervisor, inspectUpgradeProcess, installSpawnCwd, launchDetachedUpgrade, restartUpgradeProcess, serverRestartChoice, stopInstallLockingProcesses, stopUpgradeProcess, type TraySupervisor, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
 import { isRecord } from "./type-guards";
 import type { UpgradeParticipant, UpgradePlan } from "./upgrade-types";
 import type { ApprovedReleasePin } from "./hosts/update-types";
@@ -65,6 +65,8 @@ export interface ServerUpdateDeps {
   sharedInstall: typeof sharedHostInstallReason;
   /** Stops processes that lock the install directory. `tray` first, so a tray cannot restart the server; `all` after the descriptor stop. */
   releaseLocks: typeof stopInstallLockingProcesses;
+  /** The tray that started the server, captured before it is stopped. Null when the server had no tray supervisor. */
+  findTray: typeof findTraySupervisor;
   /** The new server has this long to report ready after it starts. */
   bootTimeoutMs: number;
   /** The host has this long to answer its control endpoint linked, at the expected version. */
@@ -81,6 +83,7 @@ export const defaultServerUpdateDeps: ServerUpdateDeps = {
   hostControl: requestHostControl,
   sharedInstall: sharedHostInstallReason,
   releaseLocks: stopInstallLockingProcesses,
+  findTray: findTraySupervisor,
   bootTimeoutMs: 120_000,
   hostTimeoutMs: 90_000,
   pollMs: 250,
@@ -296,6 +299,8 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
   catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return 1; throw error; }
 
   const flags = { hostDrainPending: false, hostDrained: false, hostStopped: false, serverStopped: false, swapped: false, restarted: false };
+  let tray: TraySupervisor | null = null;
+  let relaunchTray = false;
   const serverProcess = d.server.process;
   const hostProcess = d.localHost.kind === "shared" ? d.localHost.process : null;
   const backup = serverArtifact(d.installDir, "backup", id);
@@ -312,7 +317,11 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     const nonce = randomUUID();
     removeSecureFile(markerPath(id, "boot.json"));
     atomicWrite(markerPath(id, "expect.json"), JSON.stringify({ attemptId: id, version, nonce }));
-    const started = await deps.restart(serverProcess, { ...d.server.launch, env: readLaunchEnvironment(id) });
+    const choice = serverRestartChoice(tray, d.installDir, cwdOutsideInstall(d.installDir));
+    relaunchTray = choice.kind === "tray";
+    const started = choice.kind === "tray"
+      ? await deps.launch({ command: choice.command, args: choice.args, cwd: choice.cwd })
+      : await deps.restart(serverProcess, { ...d.server.launch, env: readLaunchEnvironment(id) });
     const deadline = Date.now() + deps.bootTimeoutMs;
     let exitedAt: number | undefined;
     for (;;) {
@@ -382,7 +391,10 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     };
     if (flags.restarted) {
       await step("The failed new host could not be stopped, so the previous installation was left in place", stopHostFromInstall, true);
-      if (!blocked) await step("The failed new server could not be stopped, so the previous installation was left in place", () => deps.stop(serverProcess), true);
+      if (!blocked) await step("The failed new server could not be stopped, so the previous installation was left in place", async () => {
+        if (relaunchTray) await deps.releaseLocks(d.installDir, [process.pid], "all");
+        else await deps.stop(serverProcess);
+      }, true);
     }
     if (flags.swapped && !blocked) {
       await step("The previous installation could not be restored", () => restoreInstallDirectory(d.installDir, backup, failed).then(() => { flags.swapped = false; }), true);
@@ -410,6 +422,7 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     await verifyStagedRelease(d);
     // Nothing stops while an unknown process still runs from the installation: the server's tree and the shared host (and its sessions) are expected.
     const owned = [...d.server.pids, ...(hostProcess ? [hostProcess.pid] : [])];
+    tray = await deps.findTray(d.installDir, d.server.pids);
     // The tray exe lives in the package and is not a descriptor pid. Stop it before it is treated as a foreign sharer, and before it can restart the server.
     await deps.releaseLocks(d.installDir, [process.pid, ...owned], "tray");
     const sharing = await deps.sharedInstall(d.installDir, [process.pid, ...owned], owned);
