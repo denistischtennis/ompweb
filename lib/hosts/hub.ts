@@ -1789,7 +1789,7 @@ export async function getHostSoftwareUpdates(id: string, force = false, compatib
   return info;
 }
 
-export async function updateHostSoftware(id: string, target: HostUpdateTarget, version: string, options: { force?: boolean; compatibility?: HostUpdateCompatibility; operationId?: string; releasePin?: ApprovedReleasePin; requireReleasePin?: boolean; phase?: "prepare" | "commit" | "cancel" } = {}): Promise<{ accepted: true; operation: HostUpdateOperation }> {
+export async function updateHostSoftware(id: string, target: HostUpdateTarget | "omp", version: string, options: { force?: boolean; compatibility?: HostUpdateCompatibility; operationId?: string; releasePin?: ApprovedReleasePin; requireReleasePin?: boolean; phase?: "prepare" | "commit" | "cancel" } = {}): Promise<{ accepted: true; operation: HostUpdateOperation }> {
   const compatibility = options.compatibility ?? updateCompatibility();
   if (options.requireReleasePin && !options.releasePin) throw new HostOpError(400, "invalid_request", "Missing approved release pin");
   if (options.releasePin) options.releasePin = validateApprovedReleasePin(options.releasePin, version);
@@ -1799,7 +1799,7 @@ export async function updateHostSoftware(id: string, target: HostUpdateTarget, v
   if (!options.phase && !options.releasePin && matching) {
     return { accepted: true, operation: checked.operation! };
   }
-  const candidate = checked[target];
+  const candidate = target === "omp" ? checked.omp : checked[target];
   const link = linkFor(id);
   const recovery = candidate.forceMethod === "recovery" || options.phase !== undefined && candidate.supportsTwoPhaseUpdate !== true;
   const pinnedRecovery = options.releasePin !== undefined && recovery;

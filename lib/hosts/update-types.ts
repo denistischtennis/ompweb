@@ -89,6 +89,6 @@ export interface HostUpdateRequest {
 
 export interface HostUpdateInfo {
   ompweb: HostSoftwareUpdate & Pick<NpmUpdateStatus, "installMethod"> & { protocolVersion: number | null; activeSessions?: number };
-  omp: { currentVersion: string | null };
+	omp: { currentVersion: string | null; availableVersion?: string | null; updateAvailable?: boolean; canUpdate?: boolean; blockedReason?: string | null };
   operation: HostUpdateOperation | null;
 }

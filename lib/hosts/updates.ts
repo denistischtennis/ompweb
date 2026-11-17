@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import packageJson from "../../package.json";
 import { checkNpmUpdate, detectInstallMethod } from "../npm-update";
-import { getOmpVersion } from "../omp/omp-cli";
+import { getOmpVersion, resolveOmpBin } from "../omp/omp-cli";
+import { runnerChannelStatus } from "../omp/runner-channel";
 import { createChildProcessEnvironment } from "../project-command-env";
 import { isUpdateDisabled } from "../update-policy";
 import { isNewerVersion } from "../version-compare";
@@ -203,8 +204,7 @@ async function evaluateHostUpdate(compatibility: HostUpdateCompatibility, refres
   base.supportsTwoPhaseUpdate = true;
   const installMethod = typeof Bun !== "undefined" && Bun.isStandaloneExecutable ? "binary" : detectInstallMethod(installDirectory());
   const ompweb: HostUpdateInfo["ompweb"] = { ...base, ...npm, currentVersion: packageJson.version, installMethod, protocolVersion: null, activeSessions: safetyState.sessions(), updateCommand: installMethod === "binary" ? `https://github.com/${releaseRepo()}/releases/latest` : installMethod === "bun" ? "bun add -g @kahme247/ompweb" : "npm install -g @kahme247/ompweb" };
-  // omp updates with ompweb (its runner ships inside each release): the row only reports the running version.
-  const runtime: HostUpdateInfo["omp"] = { currentVersion: ompVersion?.replace(/^omp\//, "") ?? null };
+  const runtime: HostUpdateInfo["omp"] = { currentVersion: ompVersion?.replace(/^omp\//, "") ?? null, ...(disabled ? {} : await runnerChannelStatus(resolveOmpBin())) };
   const blockers: HostUpdateBlocker[] = [];
   let plan: HostRestartPlan | null = null;
   let awaitsServerCutover = false;

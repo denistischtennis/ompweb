@@ -17,6 +17,7 @@ import { ChannelTable } from "./daemon-channels";
 import { credentialsEnv, serverFetch, startBrokerForwarder } from "./daemon-broker";
 import { createClusterConfig } from "./daemon-cluster-config";
 import { runOmpCli } from "../omp/plugins-cli";
+import { startRunnerChannelUpdate } from "../omp/runner-channel";
 import { HostResumeTracker, type HostResumeEntry } from "./host-resume";
 import { CONFIG_VERSION_RE, CREATION_ID_RE, encodeLine, HostOpError, isHostOp, LINK_LIMITS, LINK_PROTOCOL_VERSION, SESSION_OP_PARAMS, type DownMessage, type OpenChannelRequest, type UnknownMessage } from "./link-protocol";
 import { localHost, resolveSpawnCwdResult } from "./local-host";
@@ -465,6 +466,7 @@ export function runHostDaemon(options: DaemonOptions): HostDaemon {
         return checkHostUpdates(updateCompatibility(args.compatibility), args.force === true, args.targetCompatibility === undefined ? undefined : updateCompatibility(args.targetCompatibility), releasePin);
       }
       case "updateSoftware":
+        if (args.target === "omp" && typeof args.version === "string") return startRunnerChannelUpdate(args.version);
         if (args.target !== "ompweb" || typeof args.version !== "string") throw new HostOpError(400, "invalid_request", "Invalid host update");
         return startHostUpdate(args.target, args.version, updateCompatibility(args.compatibility), updateRequest(args));
       case "preparePoolProject": {

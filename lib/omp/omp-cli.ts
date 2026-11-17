@@ -48,6 +48,20 @@ export function fetchedOmpBin(): string {
     ? join(dirname(process.execPath), BIN_NAME)
     : join(getAgentDir(), "omp-web", "omp", packageJson.version, BIN_NAME);
 }
+/** A runner installed from the rolling channel. It wins over the copy shipped with this ompweb version. */
+export function channelOmpBin(): string {
+	return typeof Bun !== "undefined" && Bun.isStandaloneExecutable
+		? join(dirname(process.execPath), BIN_NAME)
+		: join(getAgentDir(), "omp-web", "omp", "channel", BIN_NAME);
+}
+
+/** Drop a resolved path after the channel binary is replaced. */
+export function resetOmpBinCache(): void {
+	cachedBin = null;
+	cachedVersion = null;
+	binMissAt = 0;
+}
+
 
 /** A source checkout builds its runner (`bun runner/scripts/build-binary.ts`) instead of fetching one. */
 export function sourceCheckoutOmpBin(): string | null {
@@ -56,18 +70,20 @@ export function sourceCheckoutOmpBin(): string | null {
 }
 
 function probeOmpBin(): string | null {
-  const override = process.env.OMP_WEB_OMP_BIN;
-  if (override) return existsSync(override) ? override : null;
-  const source = sourceCheckoutOmpBin();
-  if (source) return existsSync(source) ? source : null;
-  if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
-    const adjacent = fetchedOmpBin();
-    return existsSync(adjacent) ? adjacent : null;
-  }
-  const packaged = join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), BIN_NAME);
-  if (existsSync(packaged)) return packaged;
-  const fetched = fetchedOmpBin();
-  return existsSync(fetched) ? fetched : null;
+	const override = process.env.OMP_WEB_OMP_BIN;
+	if (override) return existsSync(override) ? override : null;
+	const source = sourceCheckoutOmpBin();
+	if (source) return existsSync(source) ? source : null;
+	const channel = channelOmpBin();
+	if (existsSync(channel)) return channel;
+	if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
+		const adjacent = fetchedOmpBin();
+		return existsSync(adjacent) ? adjacent : null;
+	}
+	const packaged = join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), BIN_NAME);
+	if (existsSync(packaged)) return packaged;
+	const fetched = fetchedOmpBin();
+	return existsSync(fetched) ? fetched : null;
 }
 
 /** What every caller that needs omp reports when resolveOmpBin finds none. */

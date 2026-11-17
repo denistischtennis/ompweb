@@ -12,6 +12,11 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ## [v0.7.2] - 2026-11-14
 
+### Added
+
+- **The host can replace its omp runner without a new ompweb version.** Settings → Hosts offers the rolling `ompweb-runner` release when its SHA-256 differs and this host is new enough. The download is checked and atomic. An `OMP_WEB_OMP_BIN` pin is left alone. Running sessions keep the old binary; new sessions use the new one.
+
+
 ### Fixed
 
 - **Restore HTTP LAN and VPN access.** Browser UUID generation now works without secure-context-only `crypto.randomUUID()`, preventing the "Something went wrong" crash when opening the app or creating a session.
