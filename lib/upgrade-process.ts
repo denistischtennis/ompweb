@@ -1068,6 +1068,16 @@ function ancestorsOf(rows: InstallLockRow[], pid: number): Set<number> {
   }
   return found;
 }
+/** Every ancestor pid of `pid`, including one that has no row any more. */
+function ancestorPids(rows: InstallLockRow[], pid: number): number[] {
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  const found: number[] = [];
+  for (let current = byPid.get(pid), hops = 0; current && hops < 32 && !found.includes(current.ppid); hops++) {
+    found.push(current.ppid);
+    current = byPid.get(current.ppid);
+  }
+  return found;
+}
 function lockKind(row: InstallLockRow, root: string): InstallLockHit["kind"] | null {
   const path = slash(row.exe || row.command.split("\0").find(Boolean) || "");
   const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
@@ -1083,7 +1093,7 @@ function lockKind(row: InstallLockRow, root: string): InstallLockHit["kind"] | n
  * pid for it), and node/bun whose image or command line references the install. `sparePids` are not selected.
  * `protectPids` are the update worker: an ancestor of one is `blocked`, never stopped — stopping it would kill the worker.
  */
-export function selectInstallLockingProcesses(rows: InstallLockRow[], installDir: string, sparePids: number[], protectPids: number[]): InstallLockSelection {
+export function selectInstallLockingProcesses(rows: InstallLockRow[], installDir: string, sparePids: number[], protectPids: number[], onlyTreesOf?: number[]): InstallLockSelection {
   const root = installKey(installDir);
   const spare = new Set(sparePids);
   const protectedAncestors = new Set<number>();
@@ -1096,6 +1106,8 @@ export function selectInstallLockingProcesses(rows: InstallLockRow[], installDir
     if (!Number.isSafeInteger(row.pid) || row.pid <= 1 || spare.has(row.pid)) continue;
     const kind = lockKind(row, root);
     if (!kind) continue;
+    // A stopped launcher is absent from the table but its survivors keep its pid as ppid (Windows does not reparent), so the chain may end at a pid that is gone.
+    if (onlyTreesOf && !onlyTreesOf.includes(row.pid) && !ancestorPids(rows, row.pid).some((pid) => onlyTreesOf.includes(pid))) continue;
     const hit = { pid: row.pid, kind };
     if (protectedAncestors.has(row.pid)) blocked.push(hit);
     else if (kind === "tray") trays.push(hit);
@@ -1128,10 +1140,10 @@ export function cwdOutsideInstall(installDir: string, home = homedir(), temporar
 }
 
 
-/** Stops install-locking processes one by one. Never `taskkill /T`: a tree kill ends a worker that still descends from the target. */
-export async function stopInstallLockingProcesses(installDir: string, sparePids: number[], phase: "tray" | "all"): Promise<void> {
+/** Stops install-locking processes one by one; `onlyTreesOf` limits that to those pids and their descendants. Never `taskkill /T`: a tree kill ends a worker that still descends from the target. */
+export async function stopInstallLockingProcesses(installDir: string, sparePids: number[], phase: "tray" | "all", onlyTreesOf?: number[]): Promise<void> {
   const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0") }));
-  const selection = selectInstallLockingProcesses(rows, installDir, sparePids, [process.pid]);
+  const selection = selectInstallLockingProcesses(rows, installDir, sparePids, [process.pid], onlyTreesOf);
   const inPhase = (hit: InstallLockHit) => phase === "all" || hit.kind === "tray";
   const blocked = selection.blocked.filter(inPhase);
   if (blocked.length) fail(`Refusing to stop process ${blocked.map((hit) => hit.pid).join(", ")}: the update worker descends from it, and stopping it would end the update`);

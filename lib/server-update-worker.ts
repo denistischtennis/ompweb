@@ -418,6 +418,8 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
       await deps.releaseLocks(d.installDir, [process.pid], "tray"); // a partial stop may have left it running: never two supervisors
       await deps.stop(serverProcess);
       flags.serverStopped = true;
+      // Stopping the launcher on Windows can leave its bun child holding the port. Only the server's own tree: never the host daemon or other processes.
+      await deps.releaseLocks(d.installDir, [process.pid], "all", d.server.pids);
       await startServer(d.fromVersion);
     }, true);
     if (flags.hostStopped && !blocked) await step("The previous local host could not be restarted", async () => {
