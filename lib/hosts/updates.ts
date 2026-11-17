@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import packageJson from "../../package.json";
 import { checkNpmUpdate, detectInstallMethod } from "../npm-update";
-import { getOmpVersion, sourceCheckoutOmpBin } from "../omp/omp-cli";
+import { getOmpVersion } from "../omp/omp-cli";
 import { installOmpRunner, latestOmpRunnerRelease } from "../omp/runner-fetch";
 import { createChildProcessEnvironment } from "../project-command-env";
 import { isUpdateDisabled } from "../update-policy";
@@ -296,22 +296,22 @@ function ompUpdateBlocker(ownClaim?: string): HostUpdateBlocker | null {
 }
 
 /**
- * The runner channel's view of this host's omp: the newest runner-only release for this ompweb version (lib/omp/runner-fetch.ts)
- * against the running omp, available when it is a different build and, where both carry a build stamp, a newer one (never a
- * downgrade). Blocked by the disable switch, by an ompweb update or another omp install (ompUpdateBlocker), and by an omp this
- * install does not choose (OMP_WEB_OMP_BIN, a source checkout's runner), which the pointer "Update omp" writes would not change.
+ * The runner channel's view of this host's omp: the newest published fork release with a runner for this platform and
+ * RUNNER_PROTOCOL (lib/omp/runner-fetch.ts) against the running omp, available when it is a different build and, where both
+ * carry a build stamp, a newer one (never a downgrade). Blocked by the disable switch, by an ompweb update or another omp
+ * install (ompUpdateBlocker), and by an omp this install does not choose (OMP_WEB_OMP_BIN), which the pointer "Update omp"
+ * writes would not change.
  */
 async function evaluateOmpUpdate(currentVersion: string | null, refresh: boolean, ownClaim?: string): Promise<HostOmpUpdate> {
   const omp: HostOmpUpdate = { currentVersion, availableVersion: null, updateAvailable: false, canUpdate: false, blockedReason: null, blockers: [], operation: getOmpUpdateOperation(), runnerChannel: true };
   const blocked = (blocker: HostUpdateBlocker): HostOmpUpdate => ({ ...omp, blockers: [blocker], blockedReason: blocker.message });
-  const fixed = process.env.OMP_WEB_OMP_BIN ? "OMP_WEB_OMP_BIN" : sourceCheckoutOmpBin() ? "this source checkout's runner" : null;
-  if (fixed) return blocked({ code: "unsupported_install", message: `This host runs omp from ${fixed}; update that build instead`, forceable: false });
+  if (process.env.OMP_WEB_OMP_BIN) return blocked({ code: "unsupported_install", message: "This host runs omp from OMP_WEB_OMP_BIN; update that build instead", forceable: false });
   let release;
   try { release = await latestOmpRunnerRelease(refresh); }
   catch { return blocked({ code: "check_failed", message: "Could not check the host's omp update version", forceable: false }); }
   const stampOf = (version: string | null) => (version === null ? null : /-int\.(\d{12})\./.exec(version)?.[1] ?? null);
   const currentStamp = stampOf(currentVersion);
-  omp.availableVersion = release?.ompTag.slice(1) ?? null;
+  omp.availableVersion = release?.tag.slice(1) ?? null;
   omp.updateAvailable = release !== null && omp.availableVersion !== currentVersion && (currentStamp === null || release.stamp > currentStamp);
   const blocker = ompUpdateBlocker(ownClaim);
   if (blocker) return { ...blocked(blocker), availableVersion: omp.availableVersion, updateAvailable: omp.updateAvailable };
@@ -451,14 +451,23 @@ function assertMatchingHostUpdate(descriptor: HostUpdateDescriptor, target: Host
 }
 
 /**
- * `omp` target: installs the newest runner-only release for this version (runner-fetch.ts `installOmpRunner`) in this
- * process, with no worker, no restart and no session touched; new sessions use it once it has passed its checks. It takes
- * the shared update claim, so it never runs beside an ompweb update (and refuses, with its own blocker code, while one is
- * active or unsettled), but keeps its own record (OMP_STATE), never ompweb's status.json. A force, a phase or an approved
- * pin (all about replacing the ompweb install) are refused.
+ * `omp` target: installs the newest fork release's runner (runner-fetch.ts `installOmpRunner`) in this process, with no
+ * worker, no restart and no session touched; new sessions use it once it has passed its checks. It takes the shared update
+ * claim, so it never runs beside an ompweb update (and refuses, with its own blocker code, while one is active or
+ * unsettled), but keeps its own record (OMP_STATE), never ompweb's status.json. A force, a phase or an approved pin (all
+ * about replacing the ompweb install) are refused. A caller's `operationId` names this one update: a replay of it returns
+ * the stored operation whatever its state, and an id that names another version or an ompweb update is a conflict.
  */
 async function startOmpUpdate(version: string, request: HostUpdateRequest): Promise<{ accepted: true; operation: HostUpdateOperation }> {
   if (request.force || request.phase || request.releasePin || request.requireReleasePin || request.targetCompatibility) throw new HostUpdateError("invalid_request", "An omp update takes only a version", 400);
+  if (request.operationId !== undefined) {
+    const recorded = getOmpUpdateOperation();
+    if (recorded?.id === request.operationId) {
+      if (recorded.version !== version) throw new HostUpdateError("operation_conflict", "That operation id already names a different host update");
+      return { accepted: true, operation: recorded };
+    }
+    if (getHostUpdateOperation()?.id === request.operationId) throw new HostUpdateError("operation_conflict", "That operation id already names a different host update");
+  }
   const refused = ompUpdateBlocker();
   if (refused) throw new HostUpdateError(refused.code, refused.message, refused.code === "updates_disabled" ? 403 : 409);
   const id = request.operationId ?? randomUUID();
@@ -498,6 +507,7 @@ export async function startHostUpdate(target: HostUpdateTarget, version: string,
   if (typeof version !== "string" || version.length > 100 || !HOST_VERSION_PATTERN.test(version)) throw new HostUpdateError("invalid_version", "Invalid host update version", 400);
   if (request.operationId !== undefined && (typeof request.operationId !== "string" || !OPERATION_ID.test(request.operationId))) throw new HostUpdateError("invalid_request", "operationId must be a UUID", 400);
   if (target === "omp") return startOmpUpdate(version, request);
+  if (request.operationId !== undefined && getOmpUpdateOperation()?.id === request.operationId) throw new HostUpdateError("operation_conflict", "That operation id already names a different host update");
   if (request.phase && (!request.operationId || request.requireReleasePin !== true || !request.releasePin)) throw new HostUpdateError("invalid_request", "Phased host updates require an operationId and approved release pin", 400);
   if (request.requireReleasePin !== undefined && typeof request.requireReleasePin !== "boolean" || request.requireReleasePin && !request.releasePin) throw new HostUpdateError("invalid_request", "Missing approved release pin", 400);
   const releasePin = request.releasePin === undefined ? undefined : validateApprovedReleasePin(request.releasePin, version, releaseRepo());

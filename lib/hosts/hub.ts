@@ -1742,7 +1742,7 @@ export async function getHostSoftwareUpdates(id: string, force = false, compatib
     || !(result.operation === null || updateOperation(result.operation))) {
     throw new HostOpError(502, "host_bad_result", "The host returned an invalid update status");
   }
-  // A daemon that predates runner-only releases reports only the omp version (and one older still reports a full update status for omp, which it ran as `omp update`): keep just the version unless the daemon declares the runner channel.
+  // A daemon that predates the runner channel reports only the omp version (and one older still reports a full update status for omp, which it ran as `omp update`): keep just the version unless the daemon declares the runner channel.
   const omp = result.omp.runnerChannel === true ? ompRunnerUpdate(result.omp) : { currentVersion: result.omp.currentVersion };
   const info = { ...result, omp } as unknown as HostUpdateInfo;
   const protocol = info.ompweb.protocolVersion;

@@ -1,16 +1,17 @@
 import { execFile } from "child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json";
+import runnerPin from "../../omp-runner.json";
 import { createChildProcessEnvironment } from "../project-command-env";
 import { getAgentDir } from "./paths";
 
 /**
- * Locating and probing ompweb's own omp build (`ompweb-omp`, built from runner/). omp-web never
- * embeds the (Bun-only) @oh-my-pi SDK — every live-agent capability goes through that binary, so
- * its absence is a first-class, user-visible state.
+ * Locating and probing ompweb's own omp build (`ompweb-omp`, built and released by the oh-my-pi fork: omp-runner.json
+ * names the release this ompweb build fetches). omp-web never embeds the (Bun-only) @oh-my-pi SDK — every live-agent
+ * capability goes through that binary, so its absence is a first-class, user-visible state.
  */
 
 let cachedBin: string | null = null;
@@ -20,8 +21,10 @@ let versionMiss: { fingerprint: string | null; retryAt: number } | null = null;
 let versionProbe: Promise<string | null> | null = null;
 
 const BIN_NAME = process.platform === "win32" ? "ompweb-omp.exe" : "ompweb-omp";
-/** This platform's runner: `runner/release/<name>` in a source checkout and the asset of that name on each release. */
-export const OMP_RUNNER_ASSET = `ompweb-omp-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`;
+/** The release asset of `<os>-<arch>`'s runner (`linux-x64`, `windows-x64`...): `ompweb-omp-<os>-<arch>[.exe]`. */
+export const runnerAsset = (target: string): string => `ompweb-omp-${target}${target.startsWith("windows-") ? ".exe" : ""}`;
+/** This platform's runner asset. */
+export const OMP_RUNNER_ASSET = runnerAsset(`${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`);
 /** Pinned package updates require this shipped-source capability before executing the candidate. */
 export const OMP_PACKAGED_RUNNER_CAPABILITY = "ompweb-packaged-runner-v1";
 // .cmd/.bat launchers (e.g. OMP_WEB_OMP_BIN pointing at a wrapper script) cannot
@@ -42,13 +45,21 @@ const MISS_TTL_MS = 30_000;
 // Launchers can stay unchanged while their underlying package is updated.
 const VERSION_TTL_MS = 5 * 60_000;
 
-/** An omp integration build, `v<ompVersion>-int.<YYYYMMDDHHMM>.g<sha7>`: the tag of a fork release and the omp tag in a runner-only release's own tag. */
+/** An omp integration build, `v<ompVersion>-int.<YYYYMMDDHHMM>.g<sha7>`: the tag of a fork release. */
 export const OMP_TAG = /^v\d+\.\d+\.\d+-int\.\d{12}\.g[0-9a-f]{7}$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
-/** This ompweb version's runner directory under the agent dir (an npm install's package dir may not be writable): the
- * fetched copy of its own release's runner, and one `<omp tag>/ompweb-omp` per runner-only release with the pointer
- * `current.json` that names the one in use. */
+/** The protocol this ompweb speaks with its runner: the runner prints its own with `--runner-info` and in its release's
+ * `ompweb-omp.json`. Bump it only with a change an older runner cannot speak; hosts then take no runner whose protocol differs. */
+export const RUNNER_PROTOCOL = 1;
+
+/** The fork release this ompweb build fetches its runner from (root `omp-runner.json`; a release build records the
+ * newest one with a matching protocol, scripts/fetch-runner.ts). `tag` becomes a path segment: an OMP_TAG (a test checks). */
+export const OMP_RUNNER_PIN: { repo: string; tag: string } = runnerPin;
+
+/** This ompweb version's runner directory under the agent dir (an npm install's package dir may not be writable): one
+ * `<omp tag>/ompweb-omp` per fork release (the pinned one this build fetches, and each "Update omp" install) and the
+ * pointer `current.json` that names the "Update omp" one in use. */
 export function ompRunnerRoot(version = packageJson.version): string {
   return join(getAgentDir(), "omp-web", "omp", version);
 }
@@ -57,15 +68,15 @@ export function ompRunnerPath(tag: string, version = packageJson.version): strin
   return join(ompRunnerRoot(version), tag, BIN_NAME);
 }
 
-/** Where this install keeps the runner it fetches from its own release (lib/omp/runner-fetch.ts): beside a compiled
- * ompweb, else in ompRunnerRoot. */
+/** Where this install keeps the runner it fetches from the pinned release (lib/omp/runner-fetch.ts): beside a compiled
+ * ompweb, else the pinned tag's directory in ompRunnerRoot (a new pin has a new directory, never a stale runner). */
 export function fetchedOmpBin(): string {
   return typeof Bun !== "undefined" && Bun.isStandaloneExecutable
     ? join(dirname(process.execPath), BIN_NAME)
-    : join(ompRunnerRoot(), BIN_NAME);
+    : ompRunnerPath(OMP_RUNNER_PIN.tag);
 }
 
-/** What "Update omp" installed: a runner of a runner-only release (lib/omp/runner-fetch.ts `installOmpRunner`) and the SHA-256 it was verified with. */
+/** What "Update omp" installed: a fork release's runner (lib/omp/runner-fetch.ts `installOmpRunner`) and the SHA-256 it was verified with. */
 export interface OmpPointer {
   tag: string;
   path: string;
@@ -89,7 +100,8 @@ export function writeOmpPointer(pointer: OmpPointer, version = packageJson.versi
   const file = join(ompRunnerRoot(version), "current.json");
   const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(temporary, JSON.stringify(pointer), { flag: "wx" });
-  renameSync(temporary, file);
+  try { renameSync(temporary, file); }
+  catch (error) { rmSync(temporary, { force: true }); throw error; }
 }
 
 function fileSha256(path: string): string {
@@ -107,11 +119,11 @@ function fileSha256(path: string): string {
 // The verdict on the pointed binary, per pointer and file identity: a ~120 MB hash is paid again only when either changes.
 let pointerVerdict: { key: string; fingerprint: string; ok: boolean } | null = null;
 
-/** The pointed runner while it still is the file whose SHA-256 the pointer records; null for the override and a source
- * checkout (they name their own runner), a missing, replaced or damaged binary, and no pointer. */
+/** The pointed runner while it still is the file whose SHA-256 the pointer records; null for the override (it names its
+ * own runner), a missing, replaced or damaged binary, and no pointer. */
 function pointedOmpBin(): string | null {
   const pointer = readOmpPointer();
-  if (!pointer || process.env.OMP_WEB_OMP_BIN || sourceCheckoutOmpBin()) return null;
+  if (!pointer || process.env.OMP_WEB_OMP_BIN) return null;
   const fingerprint = versionFingerprint(pointer.path);
   if (!fingerprint) return null;
   const key = `${pointer.tag}:${pointer.sha256}`;
@@ -123,17 +135,9 @@ function pointedOmpBin(): string | null {
   return pointerVerdict.ok ? pointer.path : null;
 }
 
-/** A source checkout builds its runner (`bun runner/scripts/build-binary.ts`) instead of fetching one. */
-export function sourceCheckoutOmpBin(): string | null {
-  const packageDir = process.env.OMP_WEB_PACKAGE_DIR ?? process.cwd();
-  return existsSync(join(packageDir, "runner", "package.json")) ? join(packageDir, "runner", "release", OMP_RUNNER_ASSET) : null;
-}
-
 function probeOmpBin(): string | null {
   const override = process.env.OMP_WEB_OMP_BIN;
   if (override) return existsSync(override) ? override : null;
-  const source = sourceCheckoutOmpBin();
-  if (source) return existsSync(source) ? source : null;
   if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
     const adjacent = fetchedOmpBin();
     return existsSync(adjacent) ? adjacent : null;
@@ -147,8 +151,8 @@ function probeOmpBin(): string | null {
 /** What every caller that needs omp reports when resolveOmpBin finds none. */
 export const OMP_NOT_FOUND = "ompweb's omp binary (ompweb-omp) not found. Reinstall ompweb or set OMP_WEB_OMP_BIN.";
 
-/** Resolve ompweb's omp binary: OMP_WEB_OMP_BIN override, else the source checkout's build, else the runner "Update omp"
- * pointed at (pointedOmpBin), else the fetched runner (see probeOmpBin). Returns null when none exists. A hit is cached
+/** Resolve ompweb's omp binary: OMP_WEB_OMP_BIN override, else the runner "Update omp" pointed at (pointedOmpBin), else
+ * the fetched runner (see probeOmpBin). Returns null when none exists. A hit is cached
  * while the file exists; a miss is re-probed after MISS_TTL_MS, or at once with `fresh` (after a fetch). The pointer is read
  * on every call, so a new session after an update starts the new runner and running ones keep theirs. */
 export function resolveOmpBin(fresh = false): string | null {

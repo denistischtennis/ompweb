@@ -1,6 +1,6 @@
 import type { NpmUpdateStatus } from "../npm-update";
 
-/** What a host updates: its ompweb install, and its omp runner (between ompweb releases, from a runner-only release: lib/omp/runner-fetch.ts). */
+/** What a host updates: its ompweb install, and its omp runner (a newer fork release's, between ompweb releases: lib/omp/runner-fetch.ts). */
 export type HostUpdateTarget = "ompweb" | "omp";
 
 /** The running web server's supported daemon protocol range. Supplied by the hub, never by the browser. */
@@ -88,7 +88,7 @@ export interface HostUpdateRequest {
 }
 
 /**
- * The runner (`omp`) on a host. `runnerChannel` is set by a daemon that checks runner-only releases; a daemon without it
+ * The runner (`omp`) on a host. `runnerChannel` is set by a daemon that checks fork releases for runners; a daemon without it
  * reports only `currentVersion`, and its other fields are never read. No force: an omp update interrupts nothing, so a
  * blocked one waits for its blocker (`ompweb_update_active` while an ompweb update holds or has unsettled the host's update
  * claim, `omp_install_active` while an omp install runs; an ompweb update is blocked by `omp_install_active` likewise).
