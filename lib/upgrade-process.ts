@@ -1051,7 +1051,7 @@ function mentionsInstall(text: string, root: string): boolean {
     if (at < 0) return false;
     const before = at === 0 ? "" : value[at - 1];
     const after = value[at + root.length] ?? "";
-    if ((before === "" || /[\s"'=]/.test(before)) && (after === "" || after === "/" || /[\s"']/.test(after))) return true;
+    if ((before === "" || before === "\0" || /[\s"'=]/.test(before)) && (after === "" || after === "/" || after === "\0" || /[\s"']/.test(after))) return true;
     from = at + root.length;
   }
   return false;
@@ -1175,4 +1175,38 @@ export function serverRestartChoice(tray: TraySupervisor | null, installDir: str
 export async function findTraySupervisor(installDir: string, serverPids: number[]): Promise<TraySupervisor | null> {
   const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0"), args: row.args }));
   return traySupervisor(rows, serverPids, installDir);
+}
+
+export interface InteractiveTrayTask { taskName: string; exe: string; args: string; cwd: string; encoded: string; script: string }
+
+const psLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+
+/** A one-shot interactive task (`schtasks /IT`) that starts the new install's tray and exits, so deleting the task does not kill the tray. */
+export function interactiveTrayTask(installDir: string, operationId: string, cwd: string): InteractiveTrayTask {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId)) fail("Invalid tray relaunch operation id");
+  if (!cwd || cwd.includes("\0")) fail("The tray working directory is empty");
+  const taskName = `ompweb-tray-${operationId}`;
+  const exe = join(installDir, "bin", "omp-web-tray.exe");
+  const args = "-Startup";
+  const encoded = encodePowershell(`Start-Process -LiteralPath ${psLiteral(exe)} -ArgumentList ${psLiteral(args)} -WorkingDirectory ${psLiteral(cwd)}`);
+  const script = [
+    `$name = ${psString(taskName)}`,
+    `$cwd = ${psString(cwd)}`,
+    `$arg = ${psString(`-NoProfile -WindowStyle Hidden -EncodedCommand ${encoded}`)}`,
+    // LogonType Interactive is schtasks /IT: the starter runs in the logged-on session, not the non-interactive WMI session.
+    `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg -WorkingDirectory $cwd`,
+    `$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited`,
+    `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1)`,
+    `Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force | Out-Null`,
+    `try {`,
+    `  Start-ScheduledTask -TaskName $name`,
+    `  for ($i = 0; $i -lt 50; $i++) { if ((Get-ScheduledTask -TaskName $name).State -ne 'Running') { break }; Start-Sleep -Milliseconds 100 }`,
+    `} finally { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue }`,
+  ].join("\n");
+  return { taskName, exe, args, cwd, encoded, script };
+}
+
+export async function launchInteractiveTray(installDir: string, operationId: string): Promise<void> {
+  if (process.platform !== "win32") fail("An interactive tray can only be relaunched on Windows");
+  await powershell(interactiveTrayTask(installDir, operationId, cwdOutsideInstall(installDir)).script, 60000);
 }

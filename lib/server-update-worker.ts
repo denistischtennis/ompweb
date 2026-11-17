@@ -15,7 +15,7 @@ import { assertOwnedPath, HOST_VERSION_PATTERN, hostLaunch, moveHostRelease, sha
 import { getAgentDir } from "./omp/paths";
 import { isProcessAlive } from "./process-identity";
 import { atomicWrite, attemptPath, isActiveLease, leasePath, markerPath, patchStatus, readStateJson, removeSecureFile, renewLease, secureRegularFile, statusPath, type SelfUpdateStage, type StoredStatus } from "./self-update-state";
-import { cwdOutsideInstall, findTraySupervisor, inspectUpgradeProcess, installSpawnCwd, launchDetachedUpgrade, restartUpgradeProcess, serverRestartChoice, stopInstallLockingProcesses, stopUpgradeProcess, type TraySupervisor, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
+import { cwdOutsideInstall, findTraySupervisor, inspectUpgradeProcess, installSpawnCwd, launchDetachedUpgrade, launchInteractiveTray, restartUpgradeProcess, serverRestartChoice, stopInstallLockingProcesses, stopUpgradeProcess, type TraySupervisor, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
 import { isRecord } from "./type-guards";
 import type { UpgradeParticipant, UpgradePlan } from "./upgrade-types";
 import type { ApprovedReleasePin } from "./hosts/update-types";
@@ -67,6 +67,8 @@ export interface ServerUpdateDeps {
   releaseLocks: typeof stopInstallLockingProcesses;
   /** The tray that started the server, captured before it is stopped. Null when the server had no tray supervisor. */
   findTray: typeof findTraySupervisor;
+  /** Starts the tray in the logged-on session. Not the detached helper: that one is non-interactive. */
+  relaunchInteractiveTray: typeof launchInteractiveTray;
   /** The new server has this long to report ready after it starts. */
   bootTimeoutMs: number;
   /** The host has this long to answer its control endpoint linked, at the expected version. */
@@ -84,6 +86,7 @@ export const defaultServerUpdateDeps: ServerUpdateDeps = {
   sharedInstall: sharedHostInstallReason,
   releaseLocks: stopInstallLockingProcesses,
   findTray: findTraySupervisor,
+  relaunchInteractiveTray: launchInteractiveTray,
   bootTimeoutMs: 120_000,
   hostTimeoutMs: 90_000,
   pollMs: 250,
@@ -319,9 +322,14 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     atomicWrite(markerPath(id, "expect.json"), JSON.stringify({ attemptId: id, version, nonce }));
     const choice = serverRestartChoice(tray, d.installDir, cwdOutsideInstall(d.installDir));
     relaunchTray = choice.kind === "tray";
-    const started = choice.kind === "tray"
-      ? await deps.launch({ command: choice.command, args: choice.args, cwd: choice.cwd })
-      : await deps.restart(serverProcess, { ...d.server.launch, env: readLaunchEnvironment(id) });
+    // The tray must run in the logged-on session. The detached helper is only for a server that had no tray.
+    let started: number | undefined;
+    if (choice.kind === "tray") await deps.relaunchInteractiveTray(d.installDir, id);
+    else {
+      const env = readLaunchEnvironment(id);
+      env.OMP_WEB_PACKAGE_DIR = d.installDir;
+      started = await deps.restart(serverProcess, { ...d.server.launch, env });
+    }
     const deadline = Date.now() + deps.bootTimeoutMs;
     let exitedAt: number | undefined;
     for (;;) {

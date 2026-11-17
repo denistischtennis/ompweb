@@ -345,9 +345,11 @@ function serverRestart(install: ServerInstall): { launch: Omit<UpgradeLaunch, "e
 }
 
 /** The server's environment for its restart, with its web password hash and every setting. Written owner-only and removed by the worker; never argv. */
-function restartEnvironment(): Record<string, string> {
+function restartEnvironment(installDir: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) if (value !== undefined && !PLUMBING_ENV.includes(name.toUpperCase())) env[name] = value;
+  // Direct `server/main.ts` has no launcher to name the install, and its cwd is outside it.
+  env.OMP_WEB_PACKAGE_DIR = installDir;
   return env;
 }
 /** The helper's environment: no web secrets (it runs npm, candidate preflights and a daemon), no launcher plumbing. */
@@ -471,7 +473,7 @@ async function coordinate(job: CommitJob): Promise<void> {
       interruptSessions: job.interruptSessions,
     };
     atomicWrite(join(attemptDir, "descriptor.json"), JSON.stringify(descriptor));
-    atomicWrite(join(attemptDir, "launch-env.json"), JSON.stringify(restartEnvironment()));
+    atomicWrite(join(attemptDir, "launch-env.json"), JSON.stringify(restartEnvironment(install.installDir)));
     const pid = await launchDetachedUpgrade(await workerLaunch(job, attemptDir, join(attemptDir, "descriptor.json")));
     patchStatus(attemptId, { ...(pid === undefined ? {} : { workerPid: pid }), coordinatorPid: undefined });
   } catch (error) {
