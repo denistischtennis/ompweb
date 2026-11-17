@@ -304,6 +304,7 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
   const flags = { hostDrainPending: false, hostDrained: false, hostStopped: false, serverStopped: false, swapped: false, restarted: false };
   let tray: TraySupervisor | null = null;
   let relaunchTray = false;
+  let trayStopped = false;
   const serverProcess = d.server.process;
   const hostProcess = d.localHost.kind === "shared" ? d.localHost.process : null;
   const backup = serverArtifact(d.installDir, "backup", id);
@@ -324,7 +325,7 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     relaunchTray = choice.kind === "tray";
     // The tray must run in the logged-on session. The detached helper is only for a server that had no tray.
     let started: number | undefined;
-    if (choice.kind === "tray") await deps.relaunchInteractiveTray(d.installDir, id);
+    if (choice.kind === "tray") await deps.relaunchInteractiveTray(choice, id);
     else {
       const env = readLaunchEnvironment(id);
       env.OMP_WEB_PACKAGE_DIR = d.installDir;
@@ -408,6 +409,11 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
       await step("The previous installation could not be restored", () => restoreInstallDirectory(d.installDir, backup, failed).then(() => { flags.swapped = false; }), true);
     }
     if (flags.serverStopped && !blocked) await step(`The previous server ${d.fromVersion} could not be restarted`, () => startServer(d.fromVersion));
+    // A tray stopped during preparation, before this worker stopped the server: bring back only the tray, since startServer would wait for a second server.
+    else if (trayStopped && !blocked) await step("The previous tray could not be restarted", async () => {
+      const choice = serverRestartChoice(tray, d.installDir, cwdOutsideInstall(d.installDir));
+      if (choice.kind === "tray") await deps.relaunchInteractiveTray(choice, id);
+    });
     if (flags.hostStopped && !blocked) await step("The previous local host could not be restarted", async () => {
       await deps.restart(hostProcess!, launchFor(d));
       await awaitHost(d.fromVersion, hostProcess!.pid, true);
@@ -418,7 +424,7 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
       if (status.drained) await deps.hostControl("resume");
       flags.hostDrainPending = false;
     });
-    const touched = flags.serverStopped || flags.hostStopped || flags.swapped || flags.restarted || flags.hostDrained;
+    const touched = flags.serverStopped || flags.hostStopped || flags.swapped || flags.restarted || flags.hostDrained || trayStopped;
     const detail = notes.length ? `; ${notes.join("; ")}` : touched ? "; the previous release was restored" : "";
     return { message: `${message(primary)}${detail}`.slice(0, 1500), recovered: notes.length === 0 };
   };
@@ -431,6 +437,7 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     // Nothing stops while an unknown process still runs from the installation: the server's tree and the shared host (and its sessions) are expected.
     const owned = [...d.server.pids, ...(hostProcess ? [hostProcess.pid] : [])];
     tray = await deps.findTray(d.installDir, d.server.pids);
+    trayStopped = tray !== null; // set before the stop: a release that fails midway may already have stopped it
     // The tray exe lives in the package and is not a descriptor pid. Stop it before it is treated as a foreign sharer, and before it can restart the server.
     await deps.releaseLocks(d.installDir, [process.pid, ...owned], "tray");
     const sharing = await deps.sharedInstall(d.installDir, [process.pid, ...owned], owned);

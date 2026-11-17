@@ -1181,14 +1181,17 @@ export interface InteractiveTrayTask { taskName: string; exe: string; args: stri
 
 const psLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-/** A one-shot interactive task (`schtasks /IT`) that starts the new install's tray and exits, so deleting the task does not kill the tray. */
-export function interactiveTrayTask(installDir: string, operationId: string, cwd: string): InteractiveTrayTask {
+/** CommandLineToArgvW's inverse for one argument: quote only when it holds whitespace or a quote. */
+const winArg = (arg: string): string => /[\s"]|^$/.test(arg) ? `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"` : arg;
+
+/** A one-shot interactive task (`schtasks /IT`) that starts the selected tray command and exits, so deleting the task does not kill the tray. */
+export function interactiveTrayTask(choice: Pick<Extract<ServerRestartChoice, { kind: "tray" }>, "command" | "args" | "cwd">, operationId: string): InteractiveTrayTask {
+  const { command: exe, cwd } = choice;
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId)) fail("Invalid tray relaunch operation id");
   if (!cwd || cwd.includes("\0")) fail("The tray working directory is empty");
   const taskName = `ompweb-tray-${operationId}`;
-  const exe = join(installDir, "bin", "omp-web-tray.exe");
-  const args = "-Startup";
-  const encoded = encodePowershell(`Start-Process -LiteralPath ${psLiteral(exe)} -ArgumentList ${psLiteral(args)} -WorkingDirectory ${psLiteral(cwd)}`);
+  const args = choice.args.map(winArg).join(" ");
+  const encoded = encodePowershell(`Start-Process -FilePath ${psLiteral(exe)}${args ? ` -ArgumentList ${psLiteral(args)}` : ""} -WorkingDirectory ${psLiteral(cwd)}`);
   const script = [
     `$name = ${psString(taskName)}`,
     `$cwd = ${psString(cwd)}`,
@@ -1206,7 +1209,7 @@ export function interactiveTrayTask(installDir: string, operationId: string, cwd
   return { taskName, exe, args, cwd, encoded, script };
 }
 
-export async function launchInteractiveTray(installDir: string, operationId: string): Promise<void> {
+export async function launchInteractiveTray(choice: Parameters<typeof interactiveTrayTask>[0], operationId: string): Promise<void> {
   if (process.platform !== "win32") fail("An interactive tray can only be relaunched on Windows");
-  await powershell(interactiveTrayTask(installDir, operationId, cwdOutsideInstall(installDir)).script, 60000);
+  await powershell(interactiveTrayTask(choice, operationId).script, 60000);
 }
