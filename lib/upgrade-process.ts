@@ -1153,7 +1153,8 @@ export function traySupervisor(rows: InstallLockRow[], serverPids: number[], ins
     for (const ancestor of ancestorsOf(rows, pid)) {
       const row = byPid.get(ancestor);
       if (!row || lockKind(row, root) !== "tray") continue;
-      const args = row.args ?? row.command.split("\0").filter((arg) => arg && arg !== row.exe);
+      // A parsed command line starts with the executable (argv[0]); it is the command, not an argument to forward.
+      const args = row.args ? row.args.slice(1) : row.command.split("\0").filter((arg) => arg && arg !== row.exe);
       return { exe: row.exe, args };
     }
   }
@@ -1170,6 +1171,12 @@ export function serverRestartChoice(tray: TraySupervisor | null, installDir: str
     return { kind: "tray", command: join(installDir, "bin", "omp-web-tray.exe"), args: tray.args.filter((arg) => !exeArg(arg)), cwd };
   }
   return { kind: "tray", command: tray.exe, args: tray.args.map((arg) => scriptArg(arg) ? join(installDir, "scripts", "windows", "omp-web-tray.ps1") : arg), cwd };
+}
+
+/** Pids of every tray from this installation that `stopInstallLockingProcesses(.., "tray")` would stop. */
+export async function findInstallTrayPids(installDir: string, sparePids: number[]): Promise<number[]> {
+  const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0") }));
+  return selectInstallLockingProcesses(rows, installDir, sparePids, [process.pid]).stop.filter((hit) => hit.kind === "tray").map((hit) => hit.pid);
 }
 
 export async function findTraySupervisor(installDir: string, serverPids: number[]): Promise<TraySupervisor | null> {

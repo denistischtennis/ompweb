@@ -15,7 +15,7 @@ import { assertOwnedPath, HOST_VERSION_PATTERN, hostLaunch, moveHostRelease, rep
 import { getAgentDir } from "./omp/paths";
 import { isProcessAlive } from "./process-identity";
 import { atomicWrite, attemptPath, isActiveLease, leasePath, markerPath, patchStatus, readStateJson, removeSecureFile, renewLease, secureRegularFile, statusPath, type SelfUpdateStage, type StoredStatus } from "./self-update-state";
-import { cwdOutsideInstall, findTraySupervisor, inspectUpgradeProcess, installSpawnCwd, launchDetachedUpgrade, launchInteractiveTray, restartUpgradeProcess, serverRestartChoice, stopInstallLockingProcesses, stopUpgradeProcess, type TraySupervisor, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
+import { cwdOutsideInstall, findInstallTrayPids, findTraySupervisor, inspectUpgradeProcess, installSpawnCwd, launchDetachedUpgrade, launchInteractiveTray, restartUpgradeProcess, serverRestartChoice, stopInstallLockingProcesses, stopUpgradeProcess, type TraySupervisor, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
 import { isRecord } from "./type-guards";
 import type { UpgradeParticipant, UpgradePlan } from "./upgrade-types";
 import type { ApprovedReleasePin } from "./hosts/update-types";
@@ -67,6 +67,8 @@ export interface ServerUpdateDeps {
   releaseLocks: typeof stopInstallLockingProcesses;
   /** The tray that started the server, captured before it is stopped. Null when the server had no tray supervisor. */
   findTray: typeof findTraySupervisor;
+  /** Every tray from the install that the tray stop would end: not foreign sharers, so the shared-install check can run before it stops. */
+  trayPids: typeof findInstallTrayPids;
   /** Starts the tray in the logged-on session. Not the detached helper: that one is non-interactive. */
   relaunchInteractiveTray: typeof launchInteractiveTray;
   /** The new server has this long to report ready after it starts. */
@@ -86,6 +88,7 @@ export const defaultServerUpdateDeps: ServerUpdateDeps = {
   sharedInstall: sharedHostInstallReason,
   releaseLocks: stopInstallLockingProcesses,
   findTray: findTraySupervisor,
+  trayPids: findInstallTrayPids,
   relaunchInteractiveTray: launchInteractiveTray,
   bootTimeoutMs: 120_000,
   hostTimeoutMs: 90_000,
@@ -409,11 +412,14 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
       await step("The previous installation could not be restored", () => restoreInstallDirectory(d.installDir, backup, failed).then(() => { flags.swapped = false; }), true);
     }
     if (flags.serverStopped && !blocked) await step(`The previous server ${d.fromVersion} could not be restarted`, () => startServer(d.fromVersion));
-    // A tray stopped during preparation, before this worker stopped the server: bring back only the tray, since startServer would wait for a second server.
-    else if (trayStopped && !blocked) await step("The previous tray could not be restarted", async () => {
-      const choice = serverRestartChoice(tray, d.installDir, cwdOutsideInstall(d.installDir));
-      if (choice.kind === "tray") await deps.relaunchInteractiveTray(choice, id);
-    });
+    // The tray was stopped during preparation while the server kept running. A relaunched tray always starts its own server and would hit the occupied
+    // port, so stop our server (identity-checked) and let the tray start the one server; recovery is reported only after it is ready.
+    else if (trayStopped && !blocked) await step(`The previous tray and server ${d.fromVersion} could not be restarted`, async () => {
+      await deps.releaseLocks(d.installDir, [process.pid], "tray"); // a partial stop may have left it running: never two supervisors
+      await deps.stop(serverProcess);
+      flags.serverStopped = true;
+      await startServer(d.fromVersion);
+    }, true);
     if (flags.hostStopped && !blocked) await step("The previous local host could not be restarted", async () => {
       await deps.restart(hostProcess!, launchFor(d));
       await awaitHost(d.fromVersion, hostProcess!.pid, true);
@@ -437,11 +443,13 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     // Nothing stops while an unknown process still runs from the installation: the server's tree and the shared host (and its sessions) are expected.
     const owned = [...d.server.pids, ...(hostProcess ? [hostProcess.pid] : [])];
     tray = await deps.findTray(d.installDir, d.server.pids);
-    trayStopped = tray !== null; // set before the stop: a release that fails midway may already have stopped it
-    // The tray exe lives in the package and is not a descriptor pid. Stop it before it is treated as a foreign sharer, and before it can restart the server.
-    await deps.releaseLocks(d.installDir, [process.pid, ...owned], "tray");
-    const sharing = await deps.sharedInstall(d.installDir, [process.pid, ...owned], owned);
+    // Check before the tray stops: no refusal may leave a stopped tray beside a running server. The trays are ours to stop, not sharers.
+    const trays = await deps.trayPids(d.installDir, [process.pid, ...owned]);
+    const sharing = await deps.sharedInstall(d.installDir, [process.pid, ...owned, ...trays], owned);
     if (sharing) throw new Error(sharing);
+    trayStopped = tray !== null; // set before the stop: a release that fails midway may already have stopped it
+    // The tray exe lives in the package and is not a descriptor pid. Stop it before it can restart the server.
+    await deps.releaseLocks(d.installDir, [process.pid, ...owned], "tray");
 
     stage("stopping");
     if (hostProcess) {
