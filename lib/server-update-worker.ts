@@ -15,7 +15,7 @@ import { assertOwnedPath, HOST_VERSION_PATTERN, hostLaunch, moveHostRelease, sha
 import { getAgentDir } from "./omp/paths";
 import { isProcessAlive } from "./process-identity";
 import { atomicWrite, attemptPath, isActiveLease, leasePath, markerPath, patchStatus, readStateJson, removeSecureFile, renewLease, secureRegularFile, statusPath, type SelfUpdateStage, type StoredStatus } from "./self-update-state";
-import { inspectUpgradeProcess, launchDetachedUpgrade, restartUpgradeProcess, stopUpgradeProcess, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
+import { inspectUpgradeProcess, installSpawnCwd, launchDetachedUpgrade, restartUpgradeProcess, stopInstallLockingProcesses, stopUpgradeProcess, type UpgradeLaunch, type UpgradeProcess } from "./upgrade-process";
 import { isRecord } from "./type-guards";
 import type { UpgradeParticipant, UpgradePlan } from "./upgrade-types";
 import type { ApprovedReleasePin } from "./hosts/update-types";
@@ -63,6 +63,8 @@ export interface ServerUpdateDeps {
   launch: typeof launchDetachedUpgrade;
   hostControl: typeof requestHostControl;
   sharedInstall: typeof sharedHostInstallReason;
+  /** Stops processes that lock the install directory. `tray` first, so a tray cannot restart the server; `all` after the descriptor stop. */
+  releaseLocks: typeof stopInstallLockingProcesses;
   /** The new server has this long to report ready after it starts. */
   bootTimeoutMs: number;
   /** The host has this long to answer its control endpoint linked, at the expected version. */
@@ -78,6 +80,7 @@ export const defaultServerUpdateDeps: ServerUpdateDeps = {
   launch: launchDetachedUpgrade,
   hostControl: requestHostControl,
   sharedInstall: sharedHostInstallReason,
+  releaseLocks: stopInstallLockingProcesses,
   bootTimeoutMs: 120_000,
   hostTimeoutMs: 90_000,
   pollMs: 250,
@@ -275,6 +278,8 @@ export function reportPlan(attemptId: string, participantId: string | null, stat
 
 /** Runs one update attempt; the exit code. The terminal result is always in status.json (and the plan), never only in the exit code. */
 export async function runServerUpdateWorker(descriptorPath: string, deps: ServerUpdateDeps = defaultServerUpdateDeps): Promise<number> {
+  // Windows refuses to rename a directory that is a live process's working directory.
+  if (process.argv[2] === "--server-update-descriptor" || process.argv[2] === "server-update-worker") process.chdir(installSpawnCwd());
   // The terminal that started the update may close before it ends.
   process.on("SIGHUP", () => undefined);
   let d: ServerUpdateDescriptor;
@@ -405,6 +410,8 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     await verifyStagedRelease(d);
     // Nothing stops while an unknown process still runs from the installation: the server's tree and the shared host (and its sessions) are expected.
     const owned = [...d.server.pids, ...(hostProcess ? [hostProcess.pid] : [])];
+    // The tray exe lives in the package and is not a descriptor pid. Stop it before it is treated as a foreign sharer, and before it can restart the server.
+    await deps.releaseLocks(d.installDir, [process.pid, ...owned], "tray");
     const sharing = await deps.sharedInstall(d.installDir, [process.pid, ...owned], owned);
     if (sharing) throw new Error(sharing);
 
@@ -440,6 +447,9 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
       } else if (!isProcessAlive(serverProcess.pid)) flags.serverStopped = true;
       throw error;
     }
+    // shortcut: a scheduled task can restart the host during the rename; hold that task across the swap if that race shows up.
+    // TerminateProcess stops only the descriptor pid, so a bun child whose command line references the install is still running.
+    await deps.releaseLocks(d.installDir, [process.pid], "all");
     const leftover = await deps.sharedInstall(d.installDir, [process.pid]);
     if (leftover) throw new Error(leftover);
 

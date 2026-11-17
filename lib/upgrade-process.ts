@@ -2,7 +2,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -1030,4 +1030,113 @@ export async function restartUpgradeProcess(plan: UpgradeProcess, launch: Upgrad
   }
   plan.current = instance;
   return instance.pid ?? undefined;
+}
+
+export interface InstallLockRow { pid: number; ppid: number; exe: string; command: string }
+export interface InstallLockHit { pid: number; kind: "tray" | "runtime" }
+export interface InstallLockSelection { stop: InstallLockHit[]; blocked: InstallLockHit[] }
+
+function slash(value: string): string { return value.replaceAll("\\", "/"); }
+/** A path prefix safe to search for. A drive root or `/` would match every process. */
+function installKey(installDir: string): string | null {
+  const root = slash(installDir).replace(/\/+$/, "").toLowerCase();
+  if (root.length < 3 || root === "/" || /^[a-z]:$/.test(root)) return null;
+  return root;
+}
+function mentionsInstall(text: string, root: string): boolean {
+  const value = slash(text).toLowerCase();
+  let from = 0;
+  while (from < value.length) {
+    const at = value.indexOf(root, from);
+    if (at < 0) return false;
+    const before = at === 0 ? "" : value[at - 1];
+    const after = value[at + root.length] ?? "";
+    if ((before === "" || /[\s"'=]/.test(before)) && (after === "" || after === "/" || /[\s"']/.test(after))) return true;
+    from = at + root.length;
+  }
+  return false;
+}
+function ancestorsOf(rows: InstallLockRow[], pid: number): Set<number> {
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  const found = new Set<number>();
+  let current = byPid.get(pid);
+  for (let hops = 0; current && hops < 32; hops++) {
+    const parent = byPid.get(current.ppid);
+    if (!parent || parent.pid === current.pid || found.has(parent.pid)) break;
+    found.add(parent.pid);
+    current = parent;
+  }
+  return found;
+}
+function lockKind(row: InstallLockRow, root: string): InstallLockHit["kind"] | null {
+  const path = slash(row.exe || row.command.split("\0").find(Boolean) || "");
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const image = Boolean(row.exe) && mentionsInstall(row.exe, root);
+  const trayScript = (name === "powershell.exe" || name === "pwsh.exe") && /omp-web-tray\.(?:ps1|exe)/i.test(slash(row.command)) && mentionsInstall(row.command, root);
+  if ((name === "omp-web-tray.exe" && (image || mentionsInstall(row.command, root))) || trayScript) return "tray";
+  if (image || (/^(node|bun)(\.exe)?$/.test(name) && mentionsInstall(row.command, root))) return "runtime";
+  return null;
+}
+
+/**
+ * Processes that keep an npm install from being renamed: the tray executable in the package (web-service.json has no
+ * pid for it), and node/bun whose image or command line references the install. `sparePids` are not selected.
+ * `protectPids` are the update worker: an ancestor of one is `blocked`, never stopped — stopping it would kill the worker.
+ */
+export function selectInstallLockingProcesses(rows: InstallLockRow[], installDir: string, sparePids: number[], protectPids: number[]): InstallLockSelection {
+  const root = installKey(installDir);
+  const spare = new Set(sparePids);
+  const protectedAncestors = new Set<number>();
+  for (const pid of protectPids) for (const ancestor of ancestorsOf(rows, pid)) protectedAncestors.add(ancestor);
+  const trays: InstallLockHit[] = [];
+  const rest: InstallLockHit[] = [];
+  const blocked: InstallLockHit[] = [];
+  if (!root) return { stop: [], blocked };
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.pid) || row.pid <= 1 || spare.has(row.pid)) continue;
+    const kind = lockKind(row, root);
+    if (!kind) continue;
+    const hit = { pid: row.pid, kind };
+    if (protectedAncestors.has(row.pid)) blocked.push(hit);
+    else if (kind === "tray") trays.push(hit);
+    else rest.push(hit);
+  }
+  return { stop: [...trays, ...rest], blocked };
+}
+
+/** Where `npm install` / the update worker must run. A cwd inside the install makes Windows refuse the rename (EBUSY). */
+export function installSpawnCwd(temporary = tmpdir(), installDir?: string): string {
+  if (!temporary || !isAbsolute(temporary)) fail("The temporary directory is empty; refusing to run the update inside its installation");
+  const root = installDir ? installKey(installDir) : null;
+  const value = slash(temporary).replace(/\/+$/, "").toLowerCase();
+  if (root && (value === root || value.startsWith(`${root}/`))) fail("The temporary directory is inside the installation; refusing to use it as the update working directory");
+  return temporary;
+}
+
+/** A directory a restarted server may use. Never the installation: that cwd locks the next rename. */
+export function cwdOutsideInstall(installDir: string, home = homedir(), temporary = tmpdir()): string {
+  const root = installKey(installDir);
+  const outside = (candidate: string) => {
+    if (!candidate || !isAbsolute(candidate)) return false;
+    if (!root) return true;
+    const value = slash(candidate).replace(/\/+$/, "").toLowerCase();
+    return value !== root && !value.startsWith(`${root}/`);
+  };
+  if (outside(home)) return home;
+  if (outside(temporary)) return temporary;
+  return fail("No working directory outside the installation; refusing to start a process that would lock the next update");
+}
+
+
+/** Stops install-locking processes one by one. Never `taskkill /T`: a tree kill ends a worker that still descends from the target. */
+export async function stopInstallLockingProcesses(installDir: string, sparePids: number[], phase: "tray" | "all"): Promise<void> {
+  const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0") }));
+  const selection = selectInstallLockingProcesses(rows, installDir, sparePids, [process.pid]);
+  const inPhase = (hit: InstallLockHit) => phase === "all" || hit.kind === "tray";
+  const blocked = selection.blocked.filter(inPhase);
+  if (blocked.length) fail(`Refusing to stop process ${blocked.map((hit) => hit.pid).join(", ")}: the update worker descends from it, and stopping it would end the update`);
+  for (const hit of selection.stop.filter(inPhase)) {
+    await signalProcess(hit.pid, "SIGTERM");
+    await waitStopped(hit.pid);
+  }
 }
