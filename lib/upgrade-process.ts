@@ -1185,10 +1185,22 @@ export function serverRestartChoice(tray: TraySupervisor | null, installDir: str
   return { kind: "tray", command: tray.exe, args: tray.args.map((arg) => scriptArg(arg) ? join(installDir, "scripts", "windows", "omp-web-tray.ps1") : arg), cwd };
 }
 
-/** Pids of every tray from this installation that `stopInstallLockingProcesses(.., "tray")` would stop. */
-export async function findInstallTrayPids(installDir: string, sparePids: number[]): Promise<number[]> {
+/**
+ * Pids the update stops or expects: every tray from this installation that `stopInstallLockingProcesses(.., "tray")` would stop, and
+ * the `cmd.exe` the tray starts the server through (tray → cmd.exe → launcher → bun), which only the descriptor's `serverPids` verify.
+ * Any other `cmd.exe`, even one referencing the install, is not owned.
+ */
+export function selectOwnedTrayPids(rows: InstallLockRow[], installDir: string, sparePids: number[], serverPids: number[]): number[] {
+  const trays = selectInstallLockingProcesses(rows, installDir, sparePids, [process.pid]).stop.filter((hit) => hit.kind === "tray").map((hit) => hit.pid);
+  const wrappers = rows.filter((row) =>
+    slash(row.exe).split("/").pop()?.toLowerCase() === "cmd.exe" && trays.includes(row.ppid)
+    && serverPids.some((pid) => ancestorPids(rows, pid).includes(row.pid))).map((row) => row.pid);
+  return [...trays, ...wrappers];
+}
+
+export async function findInstallTrayPids(installDir: string, sparePids: number[], serverPids: number[]): Promise<number[]> {
   const rows = (await listProcesses()).map((row) => ({ pid: row.pid, ppid: row.ppid, exe: row.exe, command: [row.exe, ...row.args].join("\0") }));
-  return selectInstallLockingProcesses(rows, installDir, sparePids, [process.pid]).stop.filter((hit) => hit.kind === "tray").map((hit) => hit.pid);
+  return selectOwnedTrayPids(rows, installDir, sparePids, serverPids);
 }
 
 export async function findTraySupervisor(installDir: string, serverPids: number[]): Promise<TraySupervisor | null> {

@@ -67,7 +67,7 @@ export interface ServerUpdateDeps {
   releaseLocks: typeof stopInstallLockingProcesses;
   /** The tray that started the server, captured before it is stopped. Null when the server had no tray supervisor. */
   findTray: typeof findTraySupervisor;
-  /** Every tray from the install that the tray stop would end: not foreign sharers, so the shared-install check can run before it stops. */
+  /** The trays the tray stop would end, and the cmd.exe wrapper between a tray and the server launcher: not foreign sharers, so the shared-install check can run before it stops. */
   trayPids: typeof findInstallTrayPids;
   /** Starts the tray in the logged-on session. Not the detached helper: that one is non-interactive. */
   relaunchInteractiveTray: typeof launchInteractiveTray;
@@ -446,7 +446,7 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     const owned = [...d.server.pids, ...(hostProcess ? [hostProcess.pid] : [])];
     tray = await deps.findTray(d.installDir, d.server.pids);
     // Check before the tray stops: no refusal may leave a stopped tray beside a running server. The trays are ours to stop, not sharers.
-    const trays = await deps.trayPids(d.installDir, [process.pid, ...owned]);
+    const trays = await deps.trayPids(d.installDir, [process.pid, ...owned], d.server.pids);
     const sharing = await deps.sharedInstall(d.installDir, [process.pid, ...owned, ...trays], owned);
     if (sharing) throw new Error(sharing);
     trayStopped = tray !== null; // set before the stop: a release that fails midway may already have stopped it
@@ -488,7 +488,7 @@ export async function runServerUpdateWorker(descriptorPath: string, deps: Server
     // shortcut: a scheduled task can restart the host during the rename; hold that task across the swap if that race shows up.
     // TerminateProcess stops only the descriptor pid, so a bun child whose command line references the install is still running.
     await deps.releaseLocks(d.installDir, [process.pid], "all");
-    const leftover = await deps.sharedInstall(d.installDir, [process.pid]);
+    const leftover = await deps.sharedInstall(d.installDir, [process.pid, ...trays]); // the tray's cmd.exe wrapper may still be exiting
     if (leftover) throw new Error(leftover);
 
     stage("installing");
