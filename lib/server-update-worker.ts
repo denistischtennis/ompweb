@@ -5,13 +5,13 @@
 // never the Bun server or the hub. self-update.ts prepares everything the worker uses and verifies the result.
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { promisify } from "node:util";
 import { requestHostControl, type HostControlStatus } from "./hosts/host-control";
-import { assertOwnedPath, HOST_VERSION_PATTERN, hostLaunch, moveHostRelease, sharedHostInstallReason, validateApprovedReleasePin } from "./hosts/update-worker";
+import { assertOwnedPath, HOST_VERSION_PATTERN, hostLaunch, moveHostRelease, replaceFileSync, sharedHostInstallReason, validateApprovedReleasePin } from "./hosts/update-worker";
 import { getAgentDir } from "./omp/paths";
 import { isProcessAlive } from "./process-identity";
 import { atomicWrite, attemptPath, isActiveLease, leasePath, markerPath, patchStatus, readStateJson, removeSecureFile, renewLease, secureRegularFile, statusPath, type SelfUpdateStage, type StoredStatus } from "./self-update-state";
@@ -267,7 +267,7 @@ export function reportPlan(attemptId: string, participantId: string | null, stat
     }
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     writeFileSync(temporary, JSON.stringify(plan), { mode: 0o600, flag: "wx" });
-    try { renameSync(temporary, file); } finally { rmSync(temporary, { force: true }); }
+    try { replaceFileSync(temporary, file); } finally { rmSync(temporary, { force: true }); }
   } catch (error) {
     console.error(`Could not record the server update plan's progress: ${message(error)}`);
   }
