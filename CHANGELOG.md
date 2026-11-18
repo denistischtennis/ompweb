@@ -6,6 +6,8 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ## [Unreleased]
 
+## [v0.7.2] - 2026-11-18
+
 ### Upgrading from 0.7.1 or older
 
 - **Start ompweb again after the in-app update.** The updater of 0.6.0, 0.7.0 and 0.7.1 installs the new version and reports success, but an `ompweb` you started yourself (no systemd, launchd or tray supervisor) does not come back: the old launcher exits with the server. If the page does not return, run `ompweb` again. The cause is in the old version's own updater, which this release cannot change.
@@ -14,6 +16,8 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 ### Added
 
 - **Update omp on a host without a new ompweb release.** Settings → Hosts shows "Update omp to …" for a host whose omp is older than the newest published release of the oh-my-pi fork whose runner speaks this ompweb's runner protocol (`RUNNER_PROTOCOL`; a release that speaks another one is never offered). The daemon downloads the runner into a fresh staging directory, checks its SHA-256, its `--runner-info` protocol and `--smoke-test` there, and only then moves it into place and points new sessions at it; any failure leaves the runner in use and its pointer as they were, and running sessions are not interrupted. A caller's `operationId` names one omp update: a replay returns the stored operation and installs nothing again, and a conflicting request, or a replay of an attempt a later one superseded, is refused (`operation_conflict`). An omp update keeps its own record and never touches an ompweb update's: the two never run together, and each is refused with a machine-readable blocker (`ompweb_update_active`, `omp_install_active`) while the other runs.
+- **Race-free GitHub watch registration.** `watch_github` returns the metadata snapshot used as a new watch's baseline, so agents can inspect existing comments, reviews, threads and CI before relying on later watch updates.
+- **Clearly attributed automated messages.** Cross-session agent-tool messages and GitHub watcher updates now render as source-labelled cards instead of looking like messages typed by the user. Attribution is server-authored, survives queues, retries and reloads, and links to the source session or GitHub item.
 
 ### Changed
 
@@ -26,11 +30,6 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 - **A host update's failed candidate is stopped on Windows even when it got the old daemon's pid.** Windows can reuse a freed pid, so the restarted candidate could receive the pid the update had inspected; the stop then refused the plan as inconsistent ("Invalid upgrade process plan: current instance does not match the inspected process"), left the candidate running and required recovery instead of restoring the previous release. A stop checks the instance it acts on against the live process, so a recycled pid is still refused.
 - **GitHub workflow watches no longer regress to stale run states.** Workflow updates retain GitHub's run timestamp and ignore older snapshots for the same or an earlier attempt, so a delayed `queued` response cannot follow a newer `in_progress` delivery.
 - **Keep sidebar transcript results aligned with expandable hits on every linked host.** Each daemon now searches its own active conversations, ignoring abandoned branches and pre-compaction messages.
-
-## [v0.7.2] - 2026-11-14
-
-### Fixed
-
 - **Restore HTTP LAN and VPN access.** Browser UUID generation now works without secure-context-only `crypto.randomUUID()`, preventing the "Something went wrong" crash when opening the app or creating a session.
 - **GUI server updates work for owned binary releases again.** Settings → System prepares a server-and-host compatibility plan before approval, pins the release artifacts and checks service stop/start permissions before incompatible hosts move. Incompatible hosts must have a verified migration or recovery path; the local host participates in the initial migration and a shared-installation cutover. Progress survives a server restart, and failed replacement retains the previous installation for rollback. Uncertain shutdowns retain their update claim and report recovery rather than starting a second update.
 - **Old supervised hosts have an explicit forced recovery path.** Settings → Hosts offers Force update when recovery is available. Confirmation warns that sessions and subagents may end. A fixed, integrity-checked bootstrap uses the historical runner channel without enabling old application traffic. Windows uses native PowerShell/.NET and process/service/task controls; Linux and macOS retain their own supervisor semantics. Force never bypasses release integrity, ownership, process identity, update disablement or service permissions.
@@ -45,11 +44,6 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 - **Local-host startup ignores unrelated services.** Installation paths match at directory boundaries, and daemon detection distinguishes the host subcommand from directory names or server argument values.
 - **Open live subagent transcripts without waiting forever.** Transcript pages now read the subagent's on-disk artifact directly instead of waiting for its busy agent process to answer first.
 - **Select reasoning effort for fallback models.** Settings → Models → Native OMP Retry & Fallback now stores each fallback as `provider/model:effort`, while leaving the effort unset uses the model default.
-
-### Added
-
-- **Race-free GitHub watch registration.** `watch_github` returns the metadata snapshot used as a new watch's baseline, so agents can inspect existing comments, reviews, threads and CI before relying on later watch updates.
-- **Clearly attributed automated messages.** Cross-session agent-tool messages and GitHub watcher updates now render as source-labelled cards instead of looking like messages typed by the user. Attribution is server-authored, survives queues, retries and reloads, and links to the source session or GitHub item.
 
 ## [v0.7.1] - 2026-11-14
 
