@@ -6,6 +6,11 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ## [Unreleased]
 
+### Upgrading from 0.7.1 or older
+
+- **Start ompweb again after the in-app update.** The updater of 0.6.0, 0.7.0 and 0.7.1 installs the new version and reports success, but an `ompweb` you started yourself (no systemd, launchd or tray supervisor) does not come back: the old launcher exits with the server. If the page does not return, run `ompweb` again. The cause is in the old version's own updater, which this release cannot change.
+- **Then update each host with Force.** A 0.7.x host daemon sharing the installation is shown in Settings → Hosts after the restart; its normal update is refused while the package was replaced under it, so use **Force update** to move it to this release.
+
 ### Fixed
 
 - **In-app updates can replace an npm-global Windows install started by the tray.** The update stops the tray program in the package and any node or bun process still using that install, without ending the update itself, and runs the install from outside the package so Windows can rename it. When the tray started the server, it is started again in the logged-on session and starts the one server; otherwise the server is started directly and still told which install to serve.
