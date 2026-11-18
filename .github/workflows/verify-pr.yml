@@ -146,6 +146,28 @@ jobs:
           path: ${{ runner.temp }}/compiled-upgrade.log
           if-no-files-found: ignore
 
+      # Published 0.6.0, 0.7.0 and 0.7.1 servers updated through their own GUI update path (real npm installs from the registry).
+      - name: Old published servers update to this checkout through their own GUI
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 20
+        env:
+          OMPWEB_OLD_SERVER_E2E: "1"
+        run: |
+          log="$RUNNER_TEMP/old-server-upgrade.log"
+          status=0
+          npx bun test --timeout 900000 lib/old-server-upgrade.integration.test.mjs > "$log" 2>&1 < /dev/null || status=$?
+          cat "$log"
+          exit "$status"
+
+      - name: Upload the old-server upgrade log
+        if: ${{ !cancelled() && failure() && runner.os == 'Linux' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: old-server-upgrade-${{ matrix.os }}
+          path: ${{ runner.temp }}/old-server-upgrade.log
+          if-no-files-found: ignore
+
       - name: Packed install smoke test
         shell: bash
         run: |
