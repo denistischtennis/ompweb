@@ -155,7 +155,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/old-server-upgrade.log"
           status=0
-          npx bun test --timeout 900000 lib/old-server-upgrade.integration.test.mjs > "$log" 2>&1 < /dev/null || status=$?
+          npx bun test --parallel --timeout 900000 lib/old-server-upgrade.integration.test.mjs > "$log" 2>&1 < /dev/null || status=$?
           cat "$log"
           exit "$status"
 
