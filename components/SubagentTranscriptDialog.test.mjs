@@ -13,7 +13,7 @@ mock.module("@/lib/agent-client", () => ({
   },
 }));
 const { cleanup, fireEvent, render, waitFor } = await import("@testing-library/react/pure.js");
-const { TaskBlock, CompletionBlock, SubagentDetails, SubagentTranscriptDialog } = await import("./SubagentTranscriptDialog.tsx");
+const { TaskBlock, CompletionBlock, SubagentDetails, SubagentTranscriptDialog, SubagentTranscriptRow } = await import("./SubagentTranscriptDialog.tsx");
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -214,4 +214,14 @@ test("refreshes an open transcript while completion metadata is stalled", async 
 
   view.rerender(React.createElement(SubagentTranscriptDialog, props(1)));
   await waitFor(() => assert.equal(pageRequests, 2), { timeout: 2_000 });
+});
+
+test("transcript rows cap tool-call input at the same 400-char budget as text", () => {
+  const big = "x".repeat(5000);
+  const html = renderToStaticMarkup(React.createElement(SubagentTranscriptRow, {
+    message: { role: "assistant", content: [{ type: "toolCall", toolName: "edit", input: { patch: big } }] },
+  }));
+  assert.match(html, /edit/);
+  assert.ok(html.length < 1000, `tool-call row must not render unbounded input JSON (got ${html.length} chars)`);
+  assert.doesNotMatch(html, new RegExp(`x{1000}`));
 });
