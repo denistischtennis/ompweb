@@ -21,7 +21,7 @@ import type {
   UserMessage,
 } from "@/lib/types";
 import { normalizeToolCalls } from "@/lib/normalize";
-import { hasVisibleAssistantContent } from "@/lib/assistant-response";
+import { hasHoldableAssistantContent, hasVisibleAssistantContent } from "@/lib/assistant-response";
 import type { ThinkingModelMeta } from "@/lib/thinking-levels";
 import { HostOfflineError, TransportLostError, getOutboxScope, rememberOutboxScope, sendAgentCommand, setSessionAdvisorSpawn } from "@/lib/agent-client";
 import type { HostStatus } from "@/lib/hosts/host";
@@ -2931,9 +2931,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         // copy (history callback). Tool-call turns still clear at once: their
         // rows and status line come from the live tool state instead. A
         // past-branch view never receives the saved copy, so it never holds.
+        // Thinking-only replies hold too: their thinking row was on screen
+        // while streaming, so dropping it flickers just like a text reply.
         const finishedReply = completed?.role === "assistant"
           && !catchUp.view().leafId
-          && hasVisibleAssistantContent(completed)
+          && hasHoldableAssistantContent(completed)
           && !(Array.isArray(completed.content) && completed.content.some((block) => block?.type === "toolCall"));
         dispatch(finishedReply ? { type: "hold", message: normalizeToolCalls(completed) } : { type: "idle", streaming: false });
         setAgentPhase({ kind: "waiting_model" });
