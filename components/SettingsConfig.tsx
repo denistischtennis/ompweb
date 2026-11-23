@@ -178,6 +178,8 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   { id: "continue-after-compaction", tab: "intelligence", sectionKey: "settingsConfig.contextCompaction", labelKey: "settingsConfig.continueAfterCompaction", descKey: "settingsConfig.continueAfterCompactionDesc", fallbackSection: "Context Compaction", fallbackLabel: "Continue After Compaction", fallbackDesc: "Resume task execution after compaction completes.", scope: "Native OMP" },
   { id: "compaction-method-order", tab: "intelligence", sectionKey: "settingsConfig.contextCompaction", labelKey: "settingsConfig.compactionMethodOrder", descKey: "settingsConfig.compactionMethodOrderDesc", fallbackSection: "Context Compaction", fallbackLabel: "Compaction Method Order", fallbackDesc: "Preferred fallback order for automatic context maintenance; unavailable or failed methods advance to the next choice.", scope: "Native OMP" },
   { id: "compact-mid-turn", tab: "intelligence", sectionKey: "settingsConfig.contextCompaction", labelKey: "settingsConfig.compactMidTurn", descKey: "settingsConfig.compactMidTurnDesc", fallbackSection: "Context Compaction", fallbackLabel: "Compact Mid-Turn", fallbackDesc: "Check context limits between tool execution steps.", scope: "Native OMP" },
+  // Advisor
+  { id: "advisor-enabled", tab: "intelligence", sectionKey: "settingsConfig.advisor", labelKey: "settingsConfig.advisorEnabled", descKey: "settingsConfig.advisorEnabledDesc", fallbackSection: "Advisor", fallbackLabel: "Enable Advisor", fallbackDesc: "New sessions start with Advisor on. The advisor reviews the work independently without changing code.", scope: "Native OMP" },
   // Memory & Auto-Learn
   { id: "memory-backend", tab: "intelligence", sectionKey: "settingsConfig.memoryAutoLearn", labelKey: "settingsConfig.memoryBackend", descKey: "settingsConfig.memoryBackendDesc", fallbackSection: "Memory & Auto-Learn", fallbackLabel: "Memory Backend", fallbackDesc: "Where durable knowledge is stored across sessions.", scope: "Native OMP" },
   { id: "enable-auto-learn", tab: "intelligence", sectionKey: "settingsConfig.memoryAutoLearn", labelKey: "settingsConfig.enableAutoLearn", descKey: "settingsConfig.enableAutoLearnDesc", fallbackSection: "Memory & Auto-Learn", fallbackLabel: "Enable Auto-Learn", fallbackDesc: "Capture reusable lessons after completed runs.", scope: "Native OMP" },
@@ -1752,6 +1754,20 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                       <ToggleSwitch
                         checked={nativeSettings?.compaction?.midTurnEnabled ?? true}
                         onChange={(checked) => patchSection("compaction", { midTurnEnabled: checked })}
+                      />
+                    </NativeSetting>
+                  </div>
+                </section>
+
+                {/* Advisor Section */}
+                <section style={{ display: "flex", flexDirection: "column", gap: 10, borderTop: "1px solid var(--border)", paddingTop: 18, width: "100%" }}>
+                  <div className="settings-section-title" style={{ fontSize: 13.5, fontWeight: 600, margin: 0 }}>{t("settingsConfig.advisor")}</div>
+                  <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 12.5, lineHeight: 1.45 }}>{t("settingsConfig.advisorDesc")}</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4, width: "100%" }}>
+                    <NativeSetting searchId="advisor-enabled" label={t("settingsConfig.advisorEnabled")} description={t("settingsConfig.advisorEnabledDesc")} scope="Native OMP">
+                      <ToggleSwitch
+                        checked={nativeSettings?.advisor?.enabled ?? false}
+                        onChange={(checked) => patchSection("advisor", { enabled: checked })}
                       />
                     </NativeSetting>
                   </div>
