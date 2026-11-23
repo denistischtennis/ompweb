@@ -642,6 +642,7 @@
   "chatWindow.todoStatus.pending": "未着手",
   "chatWindow.toolCallCount.one": "{count} 件のツール呼び出し",
   "chatWindow.toolCallCount.other": "{count} 件のツール呼び出し",
+  "chatWindow.turnTokens": "入力 {input} · 出力 {output} · キャッシュ読取 {cached}",
   "chatWindow.versionNotFound": "見つかりません",
   "chatWindow.waitingModel": "モデルの応答を待機中...",
   "subagentTranscript.title": "サブエージェントのトランスクリプト",
