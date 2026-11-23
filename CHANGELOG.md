@@ -12,6 +12,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ### Fixed
 
+- **Horizontal scrollbars no longer clip file-panel tabs.** The tab row keeps its full height in narrow panels, including on mobile.
 - **Refreshing Usage applies changed prices, and says when it fails.** Prices edited in `models.yml` now apply to existing sessions on refresh; they used to keep the old prices until the web server restarted. A refresh that fails now shows the error above the last report instead of leaving it up without a word.
 
 ## [v0.7.4] - 2026-11-20
