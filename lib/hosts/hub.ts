@@ -75,6 +75,9 @@ export const linkTimings = {
   pingMs: LINK_LIMITS.pingMs,
   offlineMs: LINK_LIMITS.offlineMs,
   opTimeoutMs: LINK_LIMITS.opTimeoutMs,
+  /** A host op unanswered past this logs one warning naming the host and op, so the next slow op is diagnosable
+   * from the log alone; the warning changes nothing about the op, which still fails at its own timeout. */
+  slowOpWarnMs: 10_000,
 };
 
 /** What the hub keeps on each link socket (Bun's `ws.data`): the host its token named, and whether its hello came. */
@@ -107,6 +110,8 @@ interface PendingOp {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
+  /** Fires once while the op is still waiting, unless the op settles or fails first. */
+  warnTimer?: NodeJS.Timeout;
   sessionId?: string | null;
   recoveryId?: string;
   /** Result bytes from the binary frames sent ahead of their `res`, in order (views into those frames). */
@@ -513,6 +518,7 @@ function failOp(link: Link, id: string, error: Error): void {
   if (!pending) return;
   link.pending.delete(id);
   clearTimeout(pending.timer);
+  if (pending.warnTimer) clearTimeout(pending.warnTimer);
   link.sender.drop(id);
   released(link, link.outbox.drop((m) => m.key === id));
   pending.reject(error);
@@ -1055,6 +1061,7 @@ function settle(link: Link, message: Res): void {
   if (!pending) return;
   link.pending.delete(message.id);
   clearTimeout(pending.timer);
+  if (pending.warnTimer) clearTimeout(pending.warnTimer);
   const label = labelOf(link.id);
   if (!message.ok) {
     const { status, code, message: text } = message.error;
@@ -1090,15 +1097,23 @@ function request(hostId: string, op: HostOpName, args: Record<string, unknown>, 
   const timer = setTimeout(() => failOp(link, id, new HostOpError(504, "host_timeout", `${label} did not answer ${op} in time`)), timeoutMs);
   // A deadline, like the ping and offline timers: never what keeps the server running.
   timer.unref?.();
+  // A slow op warns once, well before its deadline, so the next timeout is diagnosable from the log alone; the
+  // warning changes nothing about the op. Ops whose deadline is shorter than the warning never warn.
+  const startedAt = Date.now();
+  const warnTimer = timeoutMs > linkTimings.slowOpWarnMs ? setTimeout(() => {
+    console.warn(`[omp-web] ${label} has not answered ${op} after ${Date.now() - startedAt}ms`);
+  }, linkTimings.slowOpWarnMs) : undefined;
+  warnTimer?.unref?.();
   // Accept runs synchronously while applying `res`, before following stdout in the same frame.
   const pending: PendingOp = { op, resolve: (value) => {
     try { resolve(accept ? accept(value) : value); } catch (error) { reject(error); }
-  }, reject, timer, blob: [], blobBytes: 0, ...(recoveryId ? { recoveryId } : {}), ...(op === "open" ? { sessionId: typeof args.sessionId === "string" ? args.sessionId : null } : {}) };
+  }, reject, timer, warnTimer, blob: [], blobBytes: 0, ...(recoveryId ? { recoveryId } : {}), ...(op === "open" ? { sessionId: typeof args.sessionId === "string" ? args.sessionId : null } : {}) };
   link.pending.set(id, pending);
   try {
     sendDown(link, { type: "req", id, op, args }, id);
   } catch (error) {
     clearTimeout(timer);
+    if (warnTimer) clearTimeout(warnTimer);
     link.pending.delete(id);
     reject(error instanceof LinkLimitError ? new HostOpError(413, "host_request_too_large", `The request is too large for ${label}`) : error);
   }
