@@ -4040,6 +4040,33 @@ test("forking carries the advisor choice to the child's next native command", as
   assert.ok(world.calls.some((call) => call.url === "/api/agent/advisor-child?advisor=1"));
 });
 
+test("a new chat starts with Advisor on when the global default enables it", async () => {
+  resetWorld();
+  world.holds.push({
+    match: (method, url) => method === "POST" && url === "/api/agent/new",
+    produce: async () => ({ value: { sessionId: "created" } }),
+  });
+  const w = await mountSession(null, undefined, { newSessionCwd: "/workspace", advisorDefault: true });
+  await act(async () => { assert.equal(w.latest.advisorEnabled, true); });
+  await act(async () => {
+    // The send itself waits on the live stream; only the ensure_session
+    // request matters here, so assert on it and leave like the abandoned
+    // new-chat tests do.
+    void w.latest.handleSend("hello");
+    await sleep(50);
+  });
+  const created = world.calls.find((call) => call.url === "/api/agent/new");
+  assert.equal(created?.body?.advisor, true, "the ensure_session request must carry the default");
+  w.unmount();
+});
+
+test("a new chat starts with Advisor off when the global default is absent", async () => {
+  resetWorld();
+  const w = await mountSession(null, undefined, { newSessionCwd: "/workspace" });
+  await act(async () => { assert.equal(w.latest.advisorEnabled, false); });
+  w.unmount();
+});
+
 test("an edit-and-resend fork puts the branched prompt into the child's composer", async () => {
   const { getDraft, clearDraft } = await import("@/lib/draft-store");
   for (const [editPrompt, child] of [[true, "edit-child"], [false, "keep-child"]]) {
