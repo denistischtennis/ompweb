@@ -217,13 +217,15 @@ export function AppShell({ appName }: { appName: string }) {
   // UI-only behavior, so it lives in localStorage rather than omp's config.
   const [expandThinkingByDefault, setExpandThinkingByDefault] = useState(false);
   const [hideThinkingBlock, setHideThinkingBlock] = useState(false);
+  // Global omp `advisor.enabled`: brand-new chats start with Advisor on.
+  const [advisorDefault, setAdvisorDefault] = useState(false);
   useEffect(() => {
     // omp's own setting, so the transcript hides thinking when the TUI does.
     // Re-read on focus: the TUI or another tab may have changed it.
     const load = () => {
       fetch("/api/omp-settings")
         .then((response) => (response.ok ? response.json() : null))
-        .then((data: { settings?: { hideThinkingBlock?: boolean } } | null) => { if (data) setHideThinkingBlock(data.settings?.hideThinkingBlock === true); })
+        .then((data: { settings?: { hideThinkingBlock?: boolean; advisor?: { enabled?: boolean } } } | null) => { if (data) { setHideThinkingBlock(data.settings?.hideThinkingBlock === true); setAdvisorDefault(data.settings?.advisor?.enabled === true); } })
         .catch(() => {});
     };
     load();
@@ -2840,6 +2842,7 @@ export function AppShell({ appName }: { appName: string }) {
               showToolCallsUnfolded={showToolCallsUnfolded}
               expandThinkingByDefault={expandThinkingByDefault}
               hideThinkingBlock={hideThinkingBlock}
+              advisorDefault={advisorDefault}
               searchQuery={chatSearchQuery}
               searchTarget={searchMatchTarget && searchMatchTarget.sessionId === selectedSession?.id ? searchMatchTarget : null}
               onSearchTargetHandled={clearSearchMatchTarget}
