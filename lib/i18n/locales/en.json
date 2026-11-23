@@ -663,6 +663,7 @@
   "chatWindow.todoStatus.pending": "Pending",
   "chatWindow.toolCallCount.one": "{count} tool call",
   "chatWindow.toolCallCount.other": "{count} tool calls",
+  "chatWindow.turnTokens": "{input} in · {output} out · {cached} cached",
   "chatWindow.versionNotFound": "not found",
   "chatWindow.waitingModel": "Waiting for model...",
   "subagentTranscript.title": "Subagent transcript",

@@ -642,6 +642,7 @@
   "chatWindow.todoStatus.pending": "待处理",
   "chatWindow.toolCallCount.one": "{count} 次工具调用",
   "chatWindow.toolCallCount.other": "{count} 次工具调用",
+  "chatWindow.turnTokens": "输入 {input} · 输出 {output} · 缓存 {cached}",
   "chatWindow.versionNotFound": "未找到",
   "chatWindow.waitingModel": "等待模型响应...",
   "subagentTranscript.title": "子代理对话记录",

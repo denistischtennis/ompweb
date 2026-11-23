@@ -663,6 +663,7 @@
   "chatWindow.todoStatus.pending": "等待中",
   "chatWindow.toolCallCount.one": "{count} 次工具呼叫",
   "chatWindow.toolCallCount.other": "{count} 次工具呼叫",
+  "chatWindow.turnTokens": "輸入 {input} · 輸出 {output} · 快取 {cached}",
   "chatWindow.versionNotFound": "找不到",
   "chatWindow.waitingModel": "正在等待模型...",
   "subagentTranscript.title": "子代理逐字記錄",
