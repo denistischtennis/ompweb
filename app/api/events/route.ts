@@ -1,6 +1,7 @@
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { EventStreamConnection, getEventStreamConnection, parseHeartbeatSeconds } from "@/lib/event-stream-hub";
 import { parseEventStreamRequest, UNKNOWN_CONNECTION_CODE } from "@/lib/event-stream-protocol";
+import { viewerScope } from "@/lib/users/access";
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -11,7 +12,8 @@ export function GET(req: Request, { disableIdleTimeout }: { disableIdleTimeout: 
   // A native client may ask for a longer keep-alive (`?heartbeat=110`); values
   // outside 15..110 fall back to the 30 s default rather than being clamped.
   const heartbeat = parseHeartbeatSeconds(new URL(req.url).searchParams.get("heartbeat"));
-  const connection = new EventStreamConnection(req.signal, { heartbeatMs: heartbeat * 1000 });
+  // The connection carries the requester's visibility scope: members subscribe to and receive only their own sessions.
+  const connection = new EventStreamConnection(req.signal, { heartbeatMs: heartbeat * 1000 }, viewerScope(req));
   return new Response(connection.stream, {
     headers: {
       "Content-Type": "text/event-stream",

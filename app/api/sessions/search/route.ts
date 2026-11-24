@@ -1,5 +1,6 @@
 import { MAX_SESSION_SEARCH_QUERY_LENGTH } from "@/lib/session-content-search";
 import { searchSessionsAllHosts } from "@/lib/hosts/session-index";
+import { canSeeSession } from "@/lib/users/access";
 
 // GET /api/sessions/search?q= — NDJSON, one `{ scores }` line per batch of
 // scanned sessions (empty batches too, so the scan keeps reaching the reader).
@@ -16,7 +17,8 @@ export async function GET(req: Request, { disableIdleTimeout }: { disableIdleTim
     async pull(controller) {
       const next = await batches.next();
       if (next.done) controller.close();
-      else controller.enqueue(encoder.encode(`${JSON.stringify({ scores: next.value })}\n`));
+      // Members only ever see scores for their own sessions; other callers pass through unchanged.
+      else controller.enqueue(encoder.encode(`${JSON.stringify({ scores: Object.fromEntries(Object.entries(next.value).filter(([sessionId]) => canSeeSession(req, sessionId))) })}\n`));
     },
     async cancel() {
       await batches.return(undefined);

@@ -76,10 +76,11 @@ export async function POST(req: Request) {
         if (!started.ok) throw new HostOpError(started.status, started.code, started.error);
         const { session, realSessionId } = started.value;
         await onStarted(realSessionId);
+        // Claim before `initialize` runs, mirroring the non-pool branch: a session that starts is owned from then on, even if the prompt later fails.
+        claimSession(req, realSessionId);
         const run = () => initialize(session, true);
         return { sessionId: realSessionId, data: await (preparing ? session.withPendingCommand(run, true) : run()) };
       });
-      claimSession(req, result.sessionId);
       return Response.json({ success: true, ...result });
     }
 

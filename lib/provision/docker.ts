@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHost, readHosts, revokeHost, updateHost } from "../hosts/registry";
 import { getAgentDir } from "../omp/paths";
@@ -134,6 +134,9 @@ export async function provisionUserSpace(
     await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath), run);
   } catch (error) {
     revokeHost(host.id);
+    // The staged artifacts belonged to the revoked registration: drop them so a retry stages fresh ones.
+    rmSync(join(spaceDirectory(user.username), "host-token"), { force: true });
+    rmSync(join(spaceDirectory(user.username), "config.ovpn"), { force: true });
     throw error;
   }
   return { hostId: host.id };
@@ -154,10 +157,13 @@ export async function reprovisionUserSpace(
   const token = readFileSync(tokenPath, "utf8").trim();
   const hadVpn = hasStagedVpn(user.username);
   const staged = stageUserSpace(user, config, token);
-  const commands: string[][] = [["rm", "-f", "-v", hostContainerName(user.username)]];
-  if (hadVpn && !staged.profilePath) commands.push(["rm", "-f", vpnContainerName(user.username)]);
-  commands.push(...buildProvisionCommands(user.username, config, token, staged.profilePath));
-  await runAll(commands, run);
+  const willHaveVpn = Boolean(staged.profilePath);
+  // Remove both old containers whenever either exists: the host container may still be attached to
+  // the VPN sidecar's network namespace, and a leftover would fail the rebuild's `docker run`.
+  // Missing containers are tolerated, exactly as teardown removes both unconditionally.
+  await run(["rm", "-f", "-v", hostContainerName(user.username)]).catch(() => undefined);
+  if (hadVpn || willHaveVpn) await run(["rm", "-f", vpnContainerName(user.username)]).catch(() => undefined);
+  await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath), run);
 }
 
 /** Stops the user's container (ban); missing containers are tolerated. */

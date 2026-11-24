@@ -10,6 +10,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import type { ArchivedSessionInfo } from "@/lib/types";
 import { isValidSessionId } from "@/lib/session-file-references-core";
 import { withArchiveRestoreLock, type HeldRestore } from "@/lib/archive-restore-lock";
+import { canSeeSession, claimSession } from "@/lib/users/access";
 
 /** A registered host is offline, so restore cannot prove the session is not active there. */
 class RestoreHostOfflineError extends HostOpError {
@@ -85,7 +86,7 @@ async function linkedHostArchives(): Promise<{ archives: ArchivedSessionInfo[]; 
   };
 }
 
-export async function GET() {
+export async function GET(request?: Request) {
   try {
     const [local, linked] = await Promise.allSettled([
       listArchivedSessionInfos(),
@@ -94,10 +95,12 @@ export async function GET() {
     if (linked.status === "rejected") throw linked.reason;
     // Local corruption/unreadability is one host's failure, just like a linked daemon that cannot list its archive. Keep the
     // healthy hosts visible; direct archive discovery still throws, so outbox callers cannot mistake this for proven absence.
+    // Phase 3 scoping: members only see archives of sessions they own; other callers see everything.
     const archives = [
       ...(local.status === "fulfilled" ? local.value.map((archive) => ({ ...archive, hostId: LOCAL_HOST_ID })) : []),
       ...linked.value.archives,
-    ].sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+    ].filter((archive) => canSeeSession(request, archive.id))
+      .sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
     const unavailableHosts = [
       ...(local.status === "rejected" ? [{ id: LOCAL_HOST_ID, label: getHost(LOCAL_HOST_ID).label }] : []),
       ...linked.value.unavailableHosts,
@@ -172,6 +175,8 @@ export async function POST(req: Request) {
         if (!result.ok) return opErrorResponse(result);
         invalidateHostSessionList(hostId);
         pumpOutbox(result.value.sessionId);
+        // The restored session belongs to the restoring member from the moment it exists again.
+        claimSession(req, result.value.sessionId);
         return Response.json({ ok: true, sessionId: result.value.sessionId });
       }
       const sessionId = await restoreArchivedSession(body.key as string, undefined, undefined, claim.publish);
@@ -179,6 +184,7 @@ export async function POST(req: Request) {
       invalidateLocalSessionLists();
       // Messages held while it was archived go now (spec O6).
       pumpOutbox(sessionId);
+      claimSession(req, sessionId);
       return Response.json({ ok: true, sessionId });
     }, confirmRestoreStopped);
   } catch (error) {

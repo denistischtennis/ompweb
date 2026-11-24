@@ -19,6 +19,8 @@ import {
 import { browserTransportState } from "./web-settings";
 import { isDeltaUpdate, mergeDeltaUpdates } from "./message-delta";
 import { isRecord } from "./type-guards";
+import type { ViewerScope } from "./users/access";
+import { getUserStore } from "./users/store";
 
 // Server half of the multiplexed live-event stream (see event-stream-protocol).
 // One EventStreamConnection = one `/api/events` SSE response = one browser
@@ -195,6 +197,24 @@ function runDetach(detach: (() => void) | null): void {
   try { detach(); } catch { /* a failing unsubscribe must not block teardown */ }
 }
 
+/** A scoped member's `running`-channel payload: session ids narrowed to the ones their account owns.
+ * Applied per connection at send time, never to the shared registry snapshot. */
+function scopeRunningPayload(data: unknown, userId: number): unknown {
+  if (!isRecord(data)) return data;
+  const owned = new Set(getUserStore().ownedSessionIds(userId));
+  const keepById = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.filter((entry) => typeof entry === "string" ? owned.has(entry) : isRecord(entry) && typeof entry.id === "string" && owned.has(entry.id))
+      : value;
+  if (data.type === "running") {
+    return { ...data, runningSessionIds: keepById(data.runningSessionIds), runningSessions: keepById(data.runningSessions), exitedSessions: keepById(data.exitedSessions) };
+  }
+  if (data.type === "sessions-changed") {
+    return { ...data, sessionIds: keepById(data.sessionIds) };
+  }
+  return data;
+}
+
 export class EventStreamConnection {
   readonly id = randomUUID();
   /** The SSE response body; null when the caller supplied its own sink. */
@@ -204,10 +224,13 @@ export class EventStreamConnection {
   private closed = false;
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly signal: AbortSignal | undefined;
+  /** Whose view this connection serves (lib/users/access.ts); scoped members receive only their own sessions' frames. */
+  private readonly scope: ViewerScope;
 
-  /** `options.heartbeatMs` overrides the keep-alive for this connection's SSE sink. */
-  constructor(signal?: AbortSignal, sink?: FrameSink | { heartbeatMs?: number }) {
+  /** `options.heartbeatMs` overrides the keep-alive for this connection's SSE sink. `scope` restricts what may be subscribed. */
+  constructor(signal?: AbortSignal, sink?: FrameSink | { heartbeatMs?: number }, scope: ViewerScope = { scoped: false }) {
     this.signal = signal;
+    this.scope = scope;
     if (sink && "write" in sink) {
       this.sink = sink;
       this.stream = null;
@@ -249,13 +272,18 @@ export class EventStreamConnection {
 
   async subscribe(id: string, channel: EventStreamChannel): Promise<SubscribeResult> {
     if (this.closed) return { ok: false, status: 404, error: "Unknown event stream connection", code: UNKNOWN_CONNECTION_CODE };
+    // Phase 3 scoping: a member may only attach to sessions their account owns; any other id answers like the route's standard 404.
+    if (this.scope.scoped && this.scope.userId !== undefined && channel.kind === "session" && getUserStore().sessionOwner(channel.sessionId) !== this.scope.userId) {
+      return { ok: false, status: 404, error: "Session not found", code: "session_not_found" };
+    }
     this.unsubscribe(id);
     const subscription = new Subscription(id, channel.kind === "session");
     this.subscriptions.set(id, subscription);
+    const scopedRunning = this.scope.scoped && this.scope.userId !== undefined && channel.kind === "running";
     const handle: SubscriptionHandle = {
       get active() { return subscription.active; },
       open: () => { this.control({ type: "open", sub: id }); },
-      send: (data) => this.deliver(subscription, data),
+      send: (data) => this.deliver(subscription, scopedRunning ? scopeRunningPayload(data, this.scope.userId!) : data),
       end: () => this.end(subscription),
       setDetach: (detach) => {
         if (subscription.active) subscription.detach = detach;

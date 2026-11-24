@@ -9,8 +9,11 @@ import {
   getUserStore,
   isRole,
   isStatus,
+  resolvePassword,
   usersDatabaseExists,
   type UserAccount,
+  type UserStatus,
+  type UserRole,
 } from "./store";
 
 /**
@@ -121,36 +124,51 @@ export async function patchUser(request: Request, rawId: string): Promise<Respon
   const existing = findExistingUser(id);
   if (existing instanceof Response) return existing;
   const store = getUserStore();
+  // Validate every requested field before applying any of them, so a late invalid field cannot leave earlier ones written.
+  let role: UserRole | undefined;
+  if (body.role !== undefined) {
+    if (!isRole(body.role)) return Response.json({ error: 'role must be "admin" or "user"' }, { status: 400 });
+    role = body.role;
+  }
+  let status: UserStatus | undefined;
+  if (body.status !== undefined) {
+    if (!isStatus(body.status)) return Response.json({ error: 'status must be "active" or "banned"' }, { status: 400 });
+    status = body.status;
+  }
+  let passwordHash: string | undefined;
+  if (body.password !== undefined || body.passwordHash !== undefined) {
+    try {
+      passwordHash = resolvePassword({ password: asString(body.password), passwordHash: asString(body.passwordHash) });
+    } catch (error) {
+      return storeFailure(error);
+    }
+  }
+  let vpnProfile: string | null | undefined;
+  if (body.vpnProfile !== undefined) {
+    if (typeof body.vpnProfile !== "string" && body.vpnProfile !== null) {
+      return Response.json({ error: "vpnProfile must be a string or null" }, { status: 400 });
+    }
+    vpnProfile = body.vpnProfile;
+  }
   try {
     let user = existing;
-    if (body.role !== undefined) {
-      if (!isRole(body.role)) return Response.json({ error: 'role must be "admin" or "user"' }, { status: 400 });
-      user = store.setRole(user.id, body.role);
-    }
-    if (body.status !== undefined) {
-      if (!isStatus(body.status)) return Response.json({ error: 'status must be "active" or "banned"' }, { status: 400 });
-      user = store.setStatus(user.id, body.status);
-    }
-    if (body.password !== undefined || body.passwordHash !== undefined) {
-      user = store.resetPassword(user.id, { password: asString(body.password), passwordHash: asString(body.passwordHash) });
-    }
-    if (body.vpnProfile !== undefined) {
-      const rawVpn = body.vpnProfile;
-      if (typeof rawVpn !== "string" && rawVpn !== null) return Response.json({ error: "vpnProfile must be a string or null" }, { status: 400 });
-      user = store.setVpnProfile(user.id, rawVpn);
-    }
+    if (role !== undefined) user = store.setRole(user.id, role);
+    if (status !== undefined) user = store.setStatus(user.id, status);
+    if (passwordHash !== undefined) user = store.resetPassword(user.id, { passwordHash });
+    if (vpnProfile !== undefined) user = store.setVpnProfile(user.id, vpnProfile);
     // Keep a provisioned docker space in sync with the account's state (phases 4+5).
     const space = userSpaceConfig();
-    if (space && body.vpnProfile !== undefined) {
+    if (space && user.status === "banned") {
+      await stopUserSpace(user.username);
+    } else if (space && vpnProfile !== undefined) {
       try {
         await reprovisionUserSpace(user, space);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         return Response.json({ user, error: `profile saved but the space could not be rebuilt: ${reason}` }, { status: 502 });
       }
-    } else if (space && body.status !== undefined) {
-      if (user.status === "banned") await stopUserSpace(user.username);
-      else await startUserSpace(user.username);
+    } else if (space && user.status !== existing.status) {
+      await startUserSpace(user.username);
     }
     return Response.json({ user });
   } catch (error) {

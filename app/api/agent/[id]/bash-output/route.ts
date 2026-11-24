@@ -1,5 +1,6 @@
 import { apiErrorResponse, opErrorResponse, resolveWorkspaceHost } from "@/lib/api-utils";
 import { workspaceReadStream } from "@/lib/workspace-http";
+import { guardSession } from "@/lib/users/access";
 
 export async function GET(
   request: Request,
@@ -7,6 +8,9 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
+    // Phase 3 scoping, same as POST /api/agent/[id]: a member may only read output of their own sessions.
+    const denied = guardSession(request, id);
+    if (denied) return denied;
     const query = new URL(request.url).searchParams;
     const path = query.get("path");
     if (!path) return Response.json({ error: "path required" }, { status: 400 });

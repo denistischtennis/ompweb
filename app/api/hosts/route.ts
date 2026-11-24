@@ -5,7 +5,7 @@ import { createHost, HostRegistryUnreadableError, readHosts, revokeHost, Unknown
 import { abortBrokerRequests } from "@/lib/omp/auth-broker";
 import { isRecord } from "@/lib/type-guards";
 import { canSeeHost, viewerScope } from "@/lib/users/access";
-import { getUserStore } from "@/lib/users/store";
+import { getUserStore, usersDatabaseExists } from "@/lib/users/store";
 
 const MAX_LABEL_LENGTH = 100;
 const noStore = { "cache-control": "no-store" };
@@ -154,7 +154,8 @@ export async function PATCH(req: Request) {
     return fail("ownerUserId must be a user id or null", 400);
   }
   if (rawOwner !== undefined && viewerScope(req).scoped) return fail("Admin access required", 403);
-  if (typeof rawOwner === "number" && !getUserStore().findUserById(rawOwner)) return fail("Unknown owner user", 404);
+  // Opening the store would create users.db and flip an open server to auth-required, so consult it only when it exists.
+  if (typeof rawOwner === "number" && (!usersDatabaseExists() || !getUserStore().findUserById(rawOwner))) return fail("Unknown owner user", 404);
   if (body && body.poolId !== undefined) return renamePool(body);
   if (!body || typeof body.id !== "string" || !body.id) return fail("id is required", 400);
   const isLocal = body.id === "local";

@@ -35,7 +35,7 @@ RUN mkdir -p /opt/ompweb/seed \
  && ln -s "$(find /opt/ompweb/seed -type f -name 'ompweb-omp*' -print -quit)" /usr/local/bin/ompweb-omp
 
 # Unprivileged per-user home; the agent dir is the mount point of the user's private state.
-RUN useradd --create-home --uid 10000 omp
+RUN useradd --create-home --uid 10000 omp && mkdir -p /home/omp/.omp/agent && chown -R omp:omp /home/omp/.omp
 ENV HOME=/home/omp \
     PI_CODING_AGENT_DIR=/home/omp/.omp/agent \
     OMP_WEB_OMP_BIN=/usr/local/bin/ompweb-omp \

@@ -182,9 +182,14 @@ export function createUserSession(userId: number, epoch: number, now = Date.now(
 /** Who a request carries: a multi-user account, a legacy password session, or a trusted-proxy pass-through. */
 export type WebIdentity = { kind: "user"; user: UserAccount } | { kind: "legacy" } | { kind: "trusted" };
 
-/** Resolve the identity behind a request, or null. A v2 token must match a live active account at its current
- * epoch, so a ban or a password reset revokes every issued session instantly. */
+/** Resolve the identity behind a request, or null. Upstream precedence: a valid trusted-proxy header vouches for
+ * the request first, even alongside an invalid or expired cookie; otherwise the cookie decides. A v2 token must
+ * match a live active account at its current epoch, so a ban or a password reset revokes every issued session
+ * instantly. */
 export function authenticateRequest(request: Request, now = Date.now(), env: NodeJS.ProcessEnv = process.env): WebIdentity | null {
+  if (isTrustedProxyRequest(request.headers.get(OMP_WEB_TRUSTED_HEADER), env.OMP_WEB_TRUSTED_HEADER_SHA256)) {
+    return { kind: "trusted" };
+  }
   const cookie = new Bun.CookieMap(request.headers.get("cookie") ?? "").get(OMP_WEB_SESSION_COOKIE);
   if (cookie) {
     if (cookie.startsWith("v2.")) {
@@ -195,7 +200,7 @@ export function authenticateRequest(request: Request, now = Date.now(), env: Nod
     }
     return isValidWebSession(cookie, now, env) ? { kind: "legacy" } : null;
   }
-  return isTrustedProxyRequest(request.headers.get(OMP_WEB_TRUSTED_HEADER), env.OMP_WEB_TRUSTED_HEADER_SHA256) ? { kind: "trusted" } : null;
+  return null;
 }
 
 /** The account behind a v2 request, or null (legacy, trusted or anonymous). */

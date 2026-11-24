@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "../omp/paths";
@@ -57,7 +57,7 @@ function rowFrom(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;
 }
 
-function resolvePassword({ password, passwordHash, options }: { password?: string; passwordHash?: string; options?: PasswordHashOptions }): string {
+export function resolvePassword({ password, passwordHash, options }: { password?: string; passwordHash?: string; options?: PasswordHashOptions }): string {
   if (password !== undefined && passwordHash !== undefined) throw new UserInputError("give either password or passwordHash, not both");
   if (passwordHash !== undefined) {
     if (!isPasswordHash(passwordHash)) throw new UserInputError("passwordHash is not a valid scrypt password hash");
@@ -254,15 +254,18 @@ export class UserStore {
 
   /* ── Ownership tables (phase 3): scoping sessions/projects to accounts ─── */
 
-  private setOwner(table: "session_owners" | "project_owners", column: string, key: string, userId: number): void {
+  /** Write one ownership row and read back its owner; `replace: false` keeps any existing owner (claim semantics). */
+  private setOwner(table: "session_owners" | "project_owners", column: string, key: string, userId: number, replace: boolean): number {
     if (!key) throw new UserInputError(`${column} is required`);
     if (!this.findUserById(userId)) throw new UserInputError(`no user ${userId}`);
-    this.db.prepare(`INSERT INTO ${table} (${column}, user_id) VALUES (?, ?) ON CONFLICT(${column}) DO UPDATE SET user_id = excluded.user_id`).run(key, userId);
+    const conflict = replace ? "DO UPDATE SET user_id = excluded.user_id" : "DO NOTHING";
+    this.db.prepare(`INSERT INTO ${table} (${column}, user_id) VALUES (?, ?) ON CONFLICT(${column}) ${conflict}`).run(key, userId);
+    return asNumber(rowFrom(this.db.prepare(`SELECT user_id FROM ${table} WHERE ${column} = ?`).get(key))?.user_id) ?? userId;
   }
 
   /** Records (or moves) the owner of a session. The user must exist. */
   setSessionOwner(sessionId: string, userId: number): void {
-    this.setOwner("session_owners", "session_id", sessionId.trim(), userId);
+    this.setOwner("session_owners", "session_id", sessionId.trim(), userId, true);
   }
 
   sessionOwner(sessionId: string): number | null {
@@ -277,9 +280,11 @@ export class UserStore {
       });
   }
 
-  /** Records (or moves) the owner of a project keyed by the routes' project identity. The user must exist. */
-  setProjectOwner(projectKey: string, userId: number): void {
-    this.setOwner("project_owners", "project_key", projectKey.trim(), userId);
+  /** Records the owner of a project keyed by the routes' project identity. The user must exist.
+   * Without `force` an existing row is never overwritten — ownership cannot be stolen — and the current
+   * owner id is returned either way; `force: true` replaces it (admins may reassign). */
+  setProjectOwner(projectKey: string, userId: number, options?: { force?: boolean }): number {
+    return this.setOwner("project_owners", "project_key", projectKey.trim(), userId, options?.force === true);
   }
 
   projectOwner(projectKey: string): number | null {
@@ -309,15 +314,14 @@ export function isMultiUserMode(): boolean {
   return usersDatabaseExists() && getUserStore().hasAnyUser();
 }
 
-let cached: { path: string; mtimeMs: number; store: UserStore } | null = null;
+let cached: { path: string; store: UserStore } | null = null;
 
-/** Open (or reuse) the store; reopens when another process replaced the file. */
+/** Open (or reuse) the store; one connection per path for the process lifetime — external writers are visible through it. */
 export function getUserStore(): UserStore {
   const path = usersDbPath();
-  const mtimeMs = statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0;
-  if (cached && cached.path === path && cached.mtimeMs === mtimeMs) return cached.store;
+  if (cached && cached.path === path) return cached.store;
   const store = new UserStore(path);
-  cached = { path, mtimeMs: statSync(path).mtimeMs, store };
+  cached = { path, store };
   return store;
 }
 

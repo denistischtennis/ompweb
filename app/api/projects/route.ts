@@ -9,10 +9,19 @@ import type { ProjectUpdate } from "@/lib/hosts/session-ops";
 import { applyProjectPresentation, isReservedLaunchArg, ProjectPathError, type ProjectPresentationUpdate } from "@/lib/project-registry";
 import { cloneDirectoryName, repositoryKey } from "@/lib/git-clone";
 import { isRecord } from "@/lib/type-guards";
-import { canSeeProject, claimProject, projectKeyFor } from "@/lib/users/access";
+import { canSeeProject, claimProject, projectKeyFor, viewerScope } from "@/lib/users/access";
+import { getUserStore } from "@/lib/users/store";
 import type { ProjectLaunchConfig } from "@/lib/types";
 const MAX_EXTRA_ARGS = 32;
 const MAX_EXTRA_ARG_LENGTH = 256;
+
+/** True iff `request` may address a project: members act on their own or not-yet-owned ones (their claim takes the latter); every other caller acts on all. */
+function canAddressProject(request: Request | undefined, projectKey: string): boolean {
+  const scope = viewerScope(request);
+  if (!scope.scoped) return true;
+  const owner = getUserStore().projectOwner(projectKey);
+  return owner === null || owner === scope.userId;
+}
 
 /** Validate the workspace-level omp launch config; reject overrides of web-managed session-boundary args. */
 function parseLaunchConfig(value: unknown): ProjectLaunchConfig | undefined {
@@ -73,7 +82,12 @@ function pooledPatch(request: Request | undefined, body: Record<string, unknown>
   });
   savePools(pools);
   const owned = pool.projects.filter((project) => !project.hidden).map((project) => poolManagedProject(pool, project));
-  for (const project of owned) claimProject(request, projectKeyFor(project));
+  // Claim only the projects this request edited: editing P1 used to hand every visible pool project to the caller, stealing alice's P2 when bob renamed his own.
+  for (const project of pool.projects) {
+    if (!updates.has(project.id)) continue;
+    const key = projectKeyFor(poolManagedProject(pool, project));
+    if (canAddressProject(request, key)) claimProject(request, key);
+  }
   return Response.json({ projects: owned });
 }
 
@@ -195,6 +209,13 @@ export async function PATCH(req: Request) {
       parsed.push({ cwd, ...parsePresentation(entry) });
     }
 
+    // Phase 3 scoping: members may only manage their own (or not-yet-owned) projects; anything else answers like an unknown one.
+    for (const item of parsed) {
+      if (!canAddressProject(req, projectKeyFor({ path: item.cwd }))) {
+        return Response.json({ error: "Registered project not found", code: "project_not_found" }, { status: 404 });
+      }
+    }
+
     const target = resolveHostOrError(body.hostId);
     if ("response" in target) return target.response;
     const result = await target.host.sessionOps.updateProject(parsed);
@@ -232,6 +253,10 @@ export async function DELETE(req: Request) {
     const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
     if (!cwd) {
       return Response.json({ error: "Path is required", code: "path_required" }, { status: 400 });
+    }
+    // Phase 3 scoping: hiding a project another member owns (or that no one owns yet) is not this member's to do.
+    if (!canAddressProject(req, projectKeyFor({ path: cwd }))) {
+      return Response.json({ error: "Registered project not found", code: "project_not_found" }, { status: 404 });
     }
     const target = resolveHostOrError(body.hostId);
     if ("response" in target) return target.response;

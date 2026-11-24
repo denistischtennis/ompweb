@@ -9,7 +9,7 @@ import {
   OMP_WEB_SESSION_COOKIE,
   OMP_WEB_SESSION_MAX_AGE_SECONDS,
 } from "@/lib/web-auth";
-import { getUserStore, isMultiUserMode, usersDatabaseExists } from "@/lib/users/store";
+import { getUserStore, isMultiUserMode, UserInputError, usersDatabaseExists, type UserAccount } from "@/lib/users/store";
 
 const MAX_PASSWORD_REQUEST_BYTES = 8 * 1024;
 
@@ -52,7 +52,14 @@ export async function POST(request: Request): Promise<Response> {
 
   // Multi-user sign-in: the named account decides; its current epoch rides along in the token.
   if (multiUser && typeof body.username === "string" && body.username.trim() !== "") {
-    const user = password === undefined ? null : getUserStore().verifyLogin(body.username, password);
+    // A malformed username is a bad request, not a wrong password: verifyLogin normalizes and validates before checking.
+    let user: UserAccount | null;
+    try {
+      user = password === undefined ? null : getUserStore().verifyLogin(body.username, password);
+    } catch (error) {
+      if (error instanceof UserInputError) return Response.json({ error: "Invalid username" }, { status: 400 });
+      throw error;
+    }
     if (!user) {
       return Response.json({ error: "Incorrect username or password" }, { status: 401 });
     }
