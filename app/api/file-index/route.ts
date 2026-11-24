@@ -8,12 +8,12 @@ export async function GET(req: Request) {
   try {
     const params = new URL(req.url).searchParams;
     const sessionId = params.get("sessionId");
-    // A member may only read workspaces of sessions they own; cwd-only reads stay open.
+    // A member may only read workspaces of sessions they own; cwd-only reads are gated by host ownership in api-utils.
     if (sessionId !== null) {
       const denied = guardSession(req, sessionId);
       if (denied) return denied;
     }
-    const resolved = await resolveWorkspaceHost(params.get("hostId") ?? undefined, sessionId);
+    const resolved = await resolveWorkspaceHost(params.get("hostId") ?? undefined, sessionId, { request: req });
     if ("response" in resolved) return resolved.response;
     const result = await resolved.host.workspaceOps.fileIndex(
       resolved.cwd ?? params.get("cwd")?.trim() ?? "", params.get("q") ?? "", parseResultLimit(params.get("limit")),

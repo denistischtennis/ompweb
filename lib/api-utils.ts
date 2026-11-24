@@ -9,6 +9,7 @@ import { hostForSessionId, hostSessions } from "./hosts/session-index";
 import { LOCAL_HOST_ID } from "./hosts/registry";
 import { getRpcSession, WebRpcError } from "./rpc-manager";
 import type { WorkspaceOwner } from "./workspace-types";
+import { canSeeHost, viewerScope } from "./users/access";
 
 const SESSION_NOT_FOUND = { error: "Session not found", code: "session_not_found" } as const;
 
@@ -36,10 +37,14 @@ export function hostOfflineResponse(host: Host): Response | null {
   return apiErrorResponse(new WebRpcError(`${host.label} is offline`, "host_offline", "refused"));
 }
 
-/** The host a request names (`hostId`, this machine when absent): 404 when unknown, 503 while offline. */
-export function resolveHostOrError(hostId: unknown): { host: Host } | { response: Response } {
+/** The host a request names (`hostId`, this machine when absent): 404 when unknown or hidden from a scoped member's account, 503 while offline. */
+export function resolveHostOrError(hostId: unknown, request?: Request): { host: Host } | { response: Response } {
   const host = hostId === undefined ? getHost(LOCAL_HOST_ID) : typeof hostId === "string" ? getHost(hostId) : null;
   if (!host) return { response: Response.json({ error: "Host not found", code: "host_not_found" }, { status: 404 }) };
+  // Phase 3 scoping: members may only address hosts their account owns; foreign hosts answer like unknown ones.
+  if (request !== undefined && viewerScope(request).scoped && !canSeeHost(request, host.id)) {
+    return { response: Response.json({ error: "Host not found", code: "host_not_found" }, { status: 404 }) };
+  }
   const offline = hostOfflineResponse(host);
   return offline ? { response: offline } : { host };
 }
@@ -51,10 +56,10 @@ export function resolveHostOrError(hostId: unknown): { host: Host } | { response
 export async function resolveWorkspaceHost(
   hostId: unknown,
   sessionId: string | null,
-  { followAlias = false }: { followAlias?: boolean } = {},
+  { followAlias = false, request }: { followAlias?: boolean; request?: Request } = {},
 ): Promise<{ host: Host; sessionId: string | null; sessionFile: string | null; cwd: string | null; owner?: WorkspaceOwner } | { response: Response }> {
   if (sessionId === null) {
-    const resolved = resolveHostOrError(hostId);
+    const resolved = resolveHostOrError(hostId, request);
     return "response" in resolved ? resolved : { host: resolved.host, sessionId: null, sessionFile: null, cwd: null };
   }
   if (!isValidSessionId(sessionId)) return { response: Response.json(SESSION_NOT_FOUND, { status: 404 }) };

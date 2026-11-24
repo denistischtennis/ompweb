@@ -44,7 +44,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pat
       const denied = guardSession(request, sessionId);
       if (denied) return denied;
     }
-    const resolved = await resolveWorkspaceHost(queryHost ?? body.hostId as string | undefined, sessionId);
+    const resolved = await resolveWorkspaceHost(queryHost ?? body.hostId as string | undefined, sessionId, { request });
     if ("response" in resolved) return resolved.response;
     const { host } = resolved;
     let names: string[];
@@ -154,7 +154,7 @@ export async function GET(
       const denied = guardSession(request, sessionId);
       if (denied) return denied;
     }
-    const resolved = await resolveWorkspaceHost(searchParams.get("hostId") ?? undefined, sessionId);
+    const resolved = await resolveWorkspaceHost(searchParams.get("hostId") ?? undefined, sessionId, { request });
     if ("response" in resolved) return resolved.response;
     const { host } = resolved;
     const input = { segments, sessionId: resolved.sessionId, sessionFile: resolved.sessionFile, owner: resolved.owner };

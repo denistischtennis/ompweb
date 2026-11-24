@@ -3,7 +3,7 @@ import { apiErrorResponse, opErrorResponse, resolveWorkspaceHost } from "@/lib/a
 export async function GET(request: Request) {
   try {
     const params = new URL(request.url).searchParams;
-    const resolved = await resolveWorkspaceHost(params.get("hostId") ?? undefined, null);
+    const resolved = await resolveWorkspaceHost(params.get("hostId") ?? undefined, null, { request });
     if ("response" in resolved) return resolved.response;
     const result = await resolved.host.workspaceOps.browseDirectories(params.get("path"));
     return result.ok ? Response.json(result.value) : opErrorResponse(result);

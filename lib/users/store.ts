@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "../omp/paths";
-import { hashPassword, isPasswordHash, verifyPassword, type PasswordHashOptions } from "../web-password-hash";
+import { hashPassword, isPasswordHash, PASSWORD_HASH_MIN_LOG_N, verifyPassword, type PasswordHashOptions } from "../web-password-hash";
 import { asNumber, asString, isRecord } from "../type-guards";
 
 /**
@@ -79,10 +79,17 @@ export function isStatus(value: unknown): value is UserStatus {
 
 export class UserStore {
   private readonly db: DatabaseSync;
+  private static timingDummyHash: string | undefined;
 
   constructor(readonly dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
+    // The database holds password hashes and VPN keys: owner-only, like every other credential file on disk.
+    try {
+      chmodSync(dbPath, 0o600);
+    } catch {
+      // Windows has no POSIX mode bits; the file is still user-scoped by ACL.
+    }
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -245,10 +252,14 @@ export class UserStore {
     this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
   }
 
-  /** The account whose password matches, or null. Banned users cannot sign in. */
+  /** The account whose password matches, or null. Banned users cannot sign in; unknown and banned
+   * accounts still pay a scrypt verification, so login timing cannot enumerate usernames. */
   verifyLogin(username: string, password: string): UserAccount | null {
     const row = this.lookupForAuth(username);
-    if (!row || row.status !== "active") return null;
+    if (!row || row.status !== "active") {
+      verifyPassword(password, (UserStore.timingDummyHash ??= hashPassword("omp-web-timing-dummy", { logN: PASSWORD_HASH_MIN_LOG_N })));
+      return null;
+    }
     return verifyPassword(password, row.passwordHash) ? UserStore.account(row) : null;
   }
 

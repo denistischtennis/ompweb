@@ -7,7 +7,8 @@ import { validateAgentImages } from "@/lib/image-attachments";
 import { PoolStartError, startPooledSession } from "@/lib/hosts/pool-starts";
 import { HostOpError } from "@/lib/hosts/link-protocol";
 import { isRecord } from "@/lib/type-guards";
-import { claimSession } from "@/lib/users/access";
+import { claimProject, claimSession, viewerScope } from "@/lib/users/access";
+import { getUserStore, usersDatabaseExists } from "@/lib/users/store";
 
 function newSessionErrorResponse(error: unknown) {
   if (error instanceof PoolStartError) {
@@ -69,6 +70,14 @@ export async function POST(req: Request) {
     const preparing = promptCommand.type !== "ensure_session" || !!(provider && modelId) || !!thinkingLevel || !!name;
 
     if (pooled) {
+      // Phase 3 scoping: members start sessions in their own or unclaimed pool projects; an unclaimed one becomes theirs.
+      const poolProjectKey = `pool:${poolId as string}:${projectId as string}`;
+      const poolScope = viewerScope(req);
+      if (poolScope.scoped && usersDatabaseExists()) {
+        const owner = getUserStore().projectOwner(poolProjectKey);
+        if (owner !== null && owner !== poolScope.userId) return Response.json({ error: "Registered project not found", code: "project_not_found" }, { status: 404 });
+        if (owner === null) claimProject(req, poolProjectKey);
+      }
       // The hash is derived here from every effectful field, including unknown command options.
       const intent = { ...promptCommand, provider, modelId, toolNames, thinkingLevel, advisor, name };
       const result = await startPooledSession({ creationId: creationId as string, poolId: poolId as string, projectId: projectId as string, ...(ref === undefined ? {} : { ref: ref as string }), intent }, async (host, prepared, id, onStarted) => {
@@ -87,7 +96,7 @@ export async function POST(req: Request) {
     if (!requestedCwd || typeof requestedCwd !== "string") {
       return Response.json({ error: "cwd is required", code: "cwd_required" }, { status: 400 });
     }
-    const target = resolveHostOrError(hostId);
+    const target = resolveHostOrError(hostId, req);
     if ("response" in target) return target.response;
     const started = await startNewRpcSession(target.host, requestedCwd, toolNames, advisor === true, preparing);
     if (!started.ok) return opErrorResponse(started);
