@@ -26,11 +26,16 @@ import type { UserAccount } from "../users/store";
 
 export type DockerRunner = (args: string[]) => Promise<string>;
 
+/** One docker invocation as an error message may quote it: the host token value is replaced by `***`. */
+export function commandLabel(args: string[]): string {
+  return args.map((arg) => (arg.startsWith("OMP_WEB_HOST_TOKEN=") ? "OMP_WEB_HOST_TOKEN=***" : arg)).join(" ");
+}
+
 /** Runs a real docker command; injectable everywhere else. */
 export const nodeDockerRunner: DockerRunner = (args) => {
   const { promise, resolve, reject } = Promise.withResolvers<string>();
   execFile("docker", args, { maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
-    if (error) reject(new Error(`docker ${args.join(" ")}: ${String(stderr || error.message).trim()}`));
+    if (error) reject(new Error(`docker ${commandLabel(args)}: ${String(stderr || error.message).trim()}`));
     else resolve(String(stdout).trim());
   });
   return promise;
@@ -120,7 +125,9 @@ export function hasStagedVpn(username: string): boolean {
 
 /**
  * Creates the host record for `user`, assigns it to them, and starts their container(s).
- * A docker failure rolls the host registration back so a retry starts clean.
+ * Any failure after the registration rolls the whole attempt back: the host record is
+ * revoked, containers the attempt already started are removed, and the staged artifacts
+ * are deleted, so a retry starts clean.
  */
 export async function provisionUserSpace(
   user: Pick<UserAccount, "id" | "username" | "vpnProfile">,
@@ -128,18 +135,22 @@ export async function provisionUserSpace(
   run: DockerRunner = nodeDockerRunner,
 ): Promise<{ hostId: string }> {
   const { host, token } = createHost(user.username);
-  updateHost(host.id, { ownerUserId: user.id });
-  const staged = stageUserSpace(user, config, token);
   try {
+    updateHost(host.id, { ownerUserId: user.id });
+    const staged = stageUserSpace(user, config, token);
     await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath), run);
+    return { hostId: host.id };
   } catch (error) {
     revokeHost(host.id);
+    // Containers the attempt already started must go too: a leftover would fail the
+    // retry's `docker run`. Missing containers are tolerated, as in teardown.
+    await run(["rm", "-f", "-v", hostContainerName(user.username)]).catch(() => undefined);
+    await run(["rm", "-f", vpnContainerName(user.username)]).catch(() => undefined);
     // The staged artifacts belonged to the revoked registration: drop them so a retry stages fresh ones.
     rmSync(join(spaceDirectory(user.username), "host-token"), { force: true });
     rmSync(join(spaceDirectory(user.username), "config.ovpn"), { force: true });
     throw error;
   }
-  return { hostId: host.id };
 }
 
 /**
@@ -166,9 +177,10 @@ export async function reprovisionUserSpace(
   await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath), run);
 }
 
-/** Stops the user's container (ban); missing containers are tolerated. */
+/** Stops the user's containers (ban); missing containers are tolerated. */
 export async function stopUserSpace(username: string, run: DockerRunner = nodeDockerRunner): Promise<void> {
   await run(["stop", hostContainerName(username)]).catch(() => undefined);
+  if (hasStagedVpn(username)) await run(["stop", vpnContainerName(username)]).catch(() => undefined);
 }
 
 /** Starts an existing stopped container (unban); false when the user has no container to start. */

@@ -32,6 +32,8 @@
   "usersAdmin.setVpn": "設定 VPN",
   "usersAdmin.editVpn": "編輯 VPN",
   "usersAdmin.vpnPrompt": "{username} 的 OpenVPN 客戶端設定檔（留空則移除）",
+  "usersAdmin.save": "儲存",
+  "usersAdmin.cancel": "取消",
   "agentSession.advisorDisabled": "顧問建議功能已停用 — 可在訊息輸入框中使用閃爍圖示開關啟用。",
   "agentSession.commandCompleted": "指令已完成",
   "agentSession.commandRequiresArgs": "用法：{command} {usage}",

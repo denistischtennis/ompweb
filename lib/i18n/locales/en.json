@@ -32,6 +32,8 @@
   "usersAdmin.setVpn": "Set VPN",
   "usersAdmin.editVpn": "Edit VPN",
   "usersAdmin.vpnPrompt": "OpenVPN client profile for {username} (empty removes it)",
+  "usersAdmin.save": "Save",
+  "usersAdmin.cancel": "Cancel",
   "agentSession.advisorDisabled": "Advisor is disabled — enable it with the sparkles toggle in the composer.",
   "agentSession.commandCompleted": "Command completed",
   "agentSession.commandRequiresArgs": "Usage: {command} {usage}",

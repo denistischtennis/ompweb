@@ -32,6 +32,8 @@
   "usersAdmin.setVpn": "设置 VPN",
   "usersAdmin.editVpn": "编辑 VPN",
   "usersAdmin.vpnPrompt": "{username} 的 OpenVPN 客户端配置文件（留空则移除）",
+  "usersAdmin.save": "保存",
+  "usersAdmin.cancel": "取消",
   "agentSession.advisorDisabled": "顾问已禁用 — 请通过输入框中的星形图标启用。",
   "agentSession.commandCompleted": "命令已完成",
   "agentSession.commandRequiresArgs": "用法：{command} {usage}",

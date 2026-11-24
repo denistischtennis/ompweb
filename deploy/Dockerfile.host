@@ -7,8 +7,6 @@
 #
 # Build context: the ompweb repository root.
 #   docker build -f deploy/Dockerfile.host -t ompweb-host:local .
-# Override the source without republishing npm:
-#   docker build -f deploy/Dockerfile.host --build-arg OMPWEB_TGZ=/src/ompweb-0.7.4-mt.1.tgz ...
 ARG NODE_IMAGE=node:24-bookworm-slim
 
 FROM ${NODE_IMAGE} AS pkg
@@ -18,7 +16,6 @@ COPY . /src
 RUN npm ci --no-audit --no-fund && npm pack --pack-destination /out
 
 FROM ${NODE_IMAGE}
-ARG OMPWEB_TGZ=
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git curl \

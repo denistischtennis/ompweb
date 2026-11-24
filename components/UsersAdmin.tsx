@@ -30,6 +30,8 @@ export function UsersAdmin() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<"admin" | "user">("user");
   const [busy, setBusy] = useState(false);
+  /** The row whose VPN profile is being edited inline; one at a time, switching rows discards the draft. */
+  const [vpnEditing, setVpnEditing] = useState<{ id: number; value: string } | null>(null);
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/admin/users");
@@ -52,7 +54,8 @@ export function UsersAdmin() {
     void refresh().catch(() => setError(t("usersAdmin.loadFailed")));
   }, [refresh, t]);
 
-  async function run(action: () => Promise<Response>) {
+  /** Runs one account mutation and reports whether it succeeded, so callers may react to the outcome. */
+  async function run(action: () => Promise<Response>): Promise<boolean> {
     setBusy(true);
     try {
       const response = await action();
@@ -63,6 +66,10 @@ export function UsersAdmin() {
         setError(null);
       }
       await refresh();
+      return response.ok;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -76,9 +83,12 @@ export function UsersAdmin() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password, role }),
       }),
-    ).then(() => {
-      setUsername("");
-      setPassword("");
+    ).then((created) => {
+      // Keep the typed values when the account was not created, so the form can be corrected in place.
+      if (created) {
+        setUsername("");
+        setPassword("");
+      }
     });
   }
 
@@ -98,11 +108,11 @@ export function UsersAdmin() {
     patchUser(user, { password: next });
   }
 
-  /** Prompt for the OpenVPN profile; an empty answer removes it and takes the space off the VPN. */
-  function setVpn(user: AdminUser) {
-    const next = window.prompt(t("usersAdmin.vpnPrompt", { username: user.username }), "");
-    if (next === null) return;
-    patchUser(user, { vpnProfile: next.trim() === "" ? null : next });
+  /** Close the inline editor after saving `user`'s profile; an empty value removes it and takes the space off the VPN. */
+  function saveVpn(user: AdminUser) {
+    const value = vpnEditing?.value ?? "";
+    patchUser(user, { vpnProfile: value.trim() === "" ? null : value });
+    setVpnEditing(null);
   }
 
   function deleteUser(user: AdminUser) {
@@ -115,7 +125,7 @@ export function UsersAdmin() {
       {error && <p role="alert" style={{ margin: 0, color: "var(--status-error)", fontSize: 12 }}>{error}</p>}
       {!readOnly && (
       <form onSubmit={createUser} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: 12, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)" }}>
-        <input aria-label={t("usersAdmin.username")} style={fieldStyle} value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("usersAdmin.username")} required minLength={2} />
+        <input aria-label={t("usersAdmin.username")} style={fieldStyle} value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("usersAdmin.username")} required minLength={2} maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._-]{1,63}" />
         <input aria-label={t("usersAdmin.password")} style={fieldStyle} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("usersAdmin.password")} required minLength={8} />
         <select aria-label={t("usersAdmin.role")} style={fieldStyle} value={role} onChange={(event) => setRole(event.target.value === "admin" ? "admin" : "user")}>
           <option value="user">{t("usersAdmin.role.user")}</option>
@@ -151,9 +161,23 @@ export function UsersAdmin() {
                     {user.status === "banned" ? t("usersAdmin.unban") : t("usersAdmin.ban")}
                   </button>
                   <button type="button" disabled={busy} style={buttonStyle} onClick={() => resetPassword(user)}>{t("usersAdmin.resetPassword")}</button>
-                  <button type="button" disabled={busy} style={buttonStyle} onClick={() => setVpn(user)}>{user.vpnProfile ? t("usersAdmin.editVpn") : t("usersAdmin.setVpn")}</button>
+                  <button type="button" disabled={busy} style={buttonStyle} onClick={() => setVpnEditing({ id: user.id, value: user.vpnProfile ?? "" })}>{user.vpnProfile ? t("usersAdmin.editVpn") : t("usersAdmin.setVpn")}</button>
                   <button type="button" disabled={busy} style={buttonStyle} onClick={() => deleteUser(user)}>{t("usersAdmin.delete")}</button>
                 </span>
+                {vpnEditing?.id === user.id && (
+                  <div style={{ marginTop: 6 }}>
+                    <textarea
+                      aria-label={t("usersAdmin.vpn")}
+                      defaultValue={vpnEditing.value}
+                      onChange={(event) => setVpnEditing({ id: user.id, value: event.target.value })}
+                      style={{ ...fieldStyle, display: "block", width: "100%", minHeight: 88 }}
+                    />
+                    <span style={{ display: "inline-flex", gap: 6, marginTop: 6 }}>
+                      <button type="button" disabled={busy} style={accentButtonStyle} onClick={() => saveVpn(user)}>{t("usersAdmin.save")}</button>
+                      <button type="button" disabled={busy} style={buttonStyle} onClick={() => setVpnEditing(null)}>{t("usersAdmin.cancel")}</button>
+                    </span>
+                  </div>
+                )}
               </td>
             </tr>
           ))}

@@ -1,6 +1,7 @@
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "../bounded-form-data";
 import { asString, isRecord } from "../type-guards";
-import { authenticateRequest, isWebPasswordEnabled } from "../web-auth";
+import { authenticateRequest, createUserSession, isWebPasswordEnabled, OMP_WEB_SESSION_COOKIE, OMP_WEB_SESSION_MAX_AGE_SECONDS } from "../web-auth";
+import { requestProtocol } from "../request-security";
 import { provisionUserSpace, reprovisionUserSpace, revokeOwnedHosts, startUserSpace, stopUserSpace, teardownUserSpace, userSpaceConfig } from "../provision/docker";
 import {
   LastAdminError,
@@ -115,6 +116,7 @@ const PATCH_FIELDS: string[] = ["role", "status", "password", "passwordHash", "v
 export async function patchUser(request: Request, rawId: string): Promise<Response> {
   const id = parseUserId(rawId);
   if (id instanceof Response) return id;
+  const caller = authenticateRequest(request);
   const body = await readJsonBody(request);
   if (body instanceof Response) return body;
   const unknown = Object.keys(body).filter((key) => !PATCH_FIELDS.includes(key));
@@ -156,6 +158,20 @@ export async function patchUser(request: Request, rawId: string): Promise<Respon
     if (status !== undefined) user = store.setStatus(user.id, status);
     if (passwordHash !== undefined) user = store.resetPassword(user.id, { passwordHash });
     if (vpnProfile !== undefined) user = store.setVpnProfile(user.id, vpnProfile);
+    // A v2 account rotating its own password just ended every older token: re-issue the
+    // session cookie on responses carrying the updated record so the admin is not locked out.
+    const selfCookie =
+      passwordHash !== undefined && caller?.kind === "user" && caller.user.id === id
+        ? new Bun.Cookie(OMP_WEB_SESSION_COOKIE, createUserSession(user.id, user.tokenEpoch), {
+            httpOnly: true,
+            secure: requestProtocol(request) === "https:",
+            sameSite: "lax",
+            maxAge: OMP_WEB_SESSION_MAX_AGE_SECONDS,
+            path: "/",
+          }).serialize()
+        : undefined;
+    const answer = (payload: Record<string, unknown>, status = 200) =>
+      Response.json(payload, selfCookie === undefined ? { status } : { status, headers: { "set-cookie": selfCookie } });
     // Keep a provisioned docker space in sync with the account's state (phases 4+5).
     const space = userSpaceConfig();
     if (space && user.status === "banned") {
@@ -165,12 +181,13 @@ export async function patchUser(request: Request, rawId: string): Promise<Respon
         await reprovisionUserSpace(user, space);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        return Response.json({ user, error: `profile saved but the space could not be rebuilt: ${reason}` }, { status: 502 });
+        return answer({ user, error: `profile saved but the space could not be rebuilt: ${reason}` }, 502);
       }
     } else if (space && user.status !== existing.status) {
-      await startUserSpace(user.username);
+      const started = await startUserSpace(user.username);
+      if (!started) return answer({ user, error: "account updated but its space could not be started" }, 502);
     }
-    return Response.json({ user });
+    return answer({ user });
   } catch (error) {
     return storeFailure(error);
   }

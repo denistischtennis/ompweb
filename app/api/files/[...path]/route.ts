@@ -1,4 +1,5 @@
 import { apiErrorResponse, opErrorResponse, resolveWorkspaceHost } from "@/lib/api-utils";
+import { guardSession } from "@/lib/users/access";
 import { readWorkspaceBytes, streamWorkspaceFile } from "@/lib/workspace-http";
 import * as mammoth from "mammoth";
 import { filePathFromSegments } from "@/lib/file-authorization";
@@ -37,7 +38,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ pat
     if (!isRecord(body) || (body.hostId !== undefined && typeof body.hostId !== "string")) return Response.json({ error: "Invalid upload request", code: "invalid_request" }, { status: 400 });
     const queryHost = searchParams.get("hostId");
     if (queryHost && body.hostId && queryHost !== body.hostId) return Response.json({ error: "Host mismatch", code: "workspace_host_mismatch" }, { status: 409 });
-    const resolved = await resolveWorkspaceHost(queryHost ?? body.hostId as string | undefined, searchParams.get("sessionId"));
+    const sessionId = searchParams.get("sessionId");
+    // A member may only address workspaces of sessions they own; cwd-only uploads stay open.
+    if (sessionId !== null) {
+      const denied = guardSession(request, sessionId);
+      if (denied) return denied;
+    }
+    const resolved = await resolveWorkspaceHost(queryHost ?? body.hostId as string | undefined, sessionId);
     if ("response" in resolved) return resolved.response;
     const { host } = resolved;
     let names: string[];
@@ -141,7 +148,13 @@ export async function GET(
     const { searchParams } = new URL(request.url);
     const type = parseFileRequestType(searchParams.get("type") ?? "list");
     if (!type) return Response.json({ error: "Invalid file request type", code: "invalid_request_type" }, { status: 400 });
-    const resolved = await resolveWorkspaceHost(searchParams.get("hostId") ?? undefined, searchParams.get("sessionId"));
+    const sessionId = searchParams.get("sessionId");
+    // A member may only address workspaces of sessions they own; cwd-only reads stay open.
+    if (sessionId !== null) {
+      const denied = guardSession(request, sessionId);
+      if (denied) return denied;
+    }
+    const resolved = await resolveWorkspaceHost(searchParams.get("hostId") ?? undefined, sessionId);
     if ("response" in resolved) return resolved.response;
     const { host } = resolved;
     const input = { segments, sessionId: resolved.sessionId, sessionFile: resolved.sessionFile, owner: resolved.owner };

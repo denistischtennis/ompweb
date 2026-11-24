@@ -16,6 +16,7 @@ import { UPLOAD_ID_RE } from "./upload-limits";
 import { abortUpload, forwardUploadFrame, releaseUploadSink, startUpload, type UploadSink } from "./uploads";
 import { requestOwner } from "./web-auth";
 import { scopeFromOwner } from "./users/access";
+import { getUserStore } from "./users/store";
 
 // The browser link (docs/specs/2026-11-01-browser-link-design.md): one WebSocket per browser at /api/events/link,
 // carrying every subscription and agent command with the host link's delivery (lib/hosts/link-protocol.ts): sequenced
@@ -594,6 +595,12 @@ function onCommand(link: BrowserLink, ws: BrowserSocket, message: Record<string,
   };
   // A bad session fails only this command: the link carries other sessions' commands.
   if (typeof session !== "string" || !session || session.length > MAX_SESSION_ID_LENGTH) return reply({ status: 400, body: INVALID_REQUEST }, false);
+  // The HTTP twin gates every command with guardSession; on the link the account comes from the socket's owner,
+  // and a member driving someone else's session is answered exactly like the route's rejection path.
+  const scope = scopeFromOwner(link.owner);
+  if (scope.scoped && scope.userId !== undefined && getUserStore().sessionOwner(session) !== scope.userId) {
+    return reply({ status: 404, body: { error: "Session not found", code: "session_not_found" } }, false);
+  }
   // The route's cap on the request body, on the command: the line's cap leaves room for the envelope, and only a joined
   // line can pass it. Not remembered, so a resend is refused again.
   if (lineBytes > MAX_AGENT_COMMAND_REQUEST_BYTES && Buffer.byteLength(JSON.stringify(message.command)) > MAX_AGENT_COMMAND_REQUEST_BYTES) {

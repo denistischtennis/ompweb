@@ -13,3 +13,12 @@ test("the users panel renders its create form and table shell before data arrive
   assert.match(html, /<thead>.*<th[^>]*>Username<\/th><th[^>]*>Role<\/th><th[^>]*>Status<\/th><th[^>]*>Created<\/th><th[^>]*>Actions<\/th>.*<\/thead>/s);
   assert.match(html, /<tbody>\s*<\/tbody>/, "no rows may exist before the list loads");
 });
+
+// F8: the create form mirrors lib/users/store.ts normalizeUsername on the client.
+test("the username field carries the store's pattern and length cap", () => {
+  const html = renderToStaticMarkup(createElement(UsersAdmin));
+  const usernameInput = html.match(/<input[^>]*aria-label="Username"[^>]*>/);
+  assert.ok(usernameInput, "the username input is rendered");
+  assert.match(usernameInput[0], /pattern="\[A-Za-z0-9\]\[A-Za-z0-9\._-\]\{1,63\}"/);
+  assert.match(usernameInput[0], /maxlength="64"/i);
+});

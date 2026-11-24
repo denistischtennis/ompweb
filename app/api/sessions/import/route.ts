@@ -8,6 +8,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import { invalidateSessionFileListCache } from "@/lib/omp/session-files";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
+import { claimSession } from "@/lib/users/access";
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 
 // JSON escapes a session's newlines and quotes on the wire. Bound the request
@@ -98,6 +99,9 @@ export async function POST(req: Request) {
     // The sidebar lists this machine's sessions through its daemon.
     invalidateLocalSessionLists();
 
+    // The importing account owns the new session id; without this a member's
+    // import would be an unowned row invisible to them (agent/new does the same).
+    claimSession(req, freshId);
     return Response.json({ success: true, sessionFile });
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {

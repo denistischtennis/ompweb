@@ -32,6 +32,8 @@
   "usersAdmin.setVpn": "VPN を設定",
   "usersAdmin.editVpn": "VPN を編集",
   "usersAdmin.vpnPrompt": "{username} の OpenVPN クライアントプロファイル（空で解除）",
+  "usersAdmin.save": "保存",
+  "usersAdmin.cancel": "キャンセル",
   "agentSession.advisorDisabled": "アドバイザーが無効です — コンポーザーのスパークルアイコンで有効にしてください。",
   "agentSession.commandCompleted": "コマンドが完了しました",
   "agentSession.commandRequiresArgs": "使用法: {command} {usage}",
