@@ -1,0 +1,147 @@
+import { parseJsonWithinLimit, RequestBodyTooLargeError } from "../bounded-form-data";
+import { asString, isRecord } from "../type-guards";
+import { authenticateRequest, isWebPasswordEnabled } from "../web-auth";
+import {
+  LastAdminError,
+  UserInputError,
+  UsernameTakenError,
+  getUserStore,
+  isRole,
+  isStatus,
+  usersDatabaseExists,
+  type UserAccount,
+} from "./store";
+
+/**
+ * The admin user-administration API (fork): list, create, inspect, change and delete accounts.
+ * The route modules under app/api/admin/users keep to method exports only; the logic lives here.
+ */
+
+const MAX_BODY_BYTES = 8 * 1024;
+
+/** undefined when the caller may manage accounts; otherwise the 401/403 to answer with. */
+export function adminGuard(request: Request): Response | undefined {
+  const identity = authenticateRequest(request);
+  if (identity === null) {
+    // An open server (no hash configured, no accounts yet) has nothing to be an admin of; it stays usable for setup.
+    return isWebPasswordEnabled() || usersDatabaseExists()
+      ? Response.json({ error: "Authentication required" }, { status: 401 })
+      : undefined;
+  }
+  if (identity.kind === "user" && identity.user.role !== "admin") {
+    return Response.json({ error: "Admin access required" }, { status: 403 });
+  }
+  return undefined;
+}
+
+async function readJsonBody(request: Request): Promise<Record<string, unknown> | Response> {
+  let parsed: unknown;
+  try {
+    parsed = await parseJsonWithinLimit(request, MAX_BODY_BYTES);
+  } catch (error) {
+    return error instanceof RequestBodyTooLargeError
+      ? Response.json({ error: "Request body too large" }, { status: 413 })
+      : Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  return isRecord(parsed)
+    ? parsed
+    : Response.json({ error: "body must be a JSON object" }, { status: 400 });
+}
+
+function storeFailure(error: unknown): Response {
+  if (error instanceof UsernameTakenError || error instanceof LastAdminError) {
+    return Response.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof UserInputError) {
+    return Response.json({ error: error.message }, { status: 400 });
+  }
+  throw error;
+}
+
+function parseUserId(raw: string): number | Response {
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : Response.json({ error: "user id must be a positive integer" }, { status: 400 });
+}
+
+function findExistingUser(id: number): UserAccount | Response {
+  const user = usersDatabaseExists() ? getUserStore().findUserById(id) : undefined;
+  return user ?? Response.json({ error: "No such user" }, { status: 404 });
+}
+
+export async function listUsers(): Promise<Response> {
+  const users = usersDatabaseExists() ? getUserStore().listUsers() : [];
+  return Response.json({ users });
+}
+
+export async function createUser(request: Request): Promise<Response> {
+  const body = await readJsonBody(request);
+  if (body instanceof Response) return body;
+  try {
+    const user = getUserStore().createUser({
+      username: body.username,
+      role: body.role ?? "user",
+      password: asString(body.password),
+      passwordHash: asString(body.passwordHash),
+    });
+    return Response.json({ user }, { status: 201 });
+  } catch (error) {
+    return storeFailure(error);
+  }
+}
+
+export async function getUser(request: Request, rawId: string): Promise<Response> {
+  const id = parseUserId(rawId);
+  if (id instanceof Response) return id;
+  const user = findExistingUser(id);
+  return user instanceof Response ? user : Response.json({ user });
+}
+
+const PATCH_FIELDS: string[] = ["role", "status", "password", "passwordHash"];
+
+export async function patchUser(request: Request, rawId: string): Promise<Response> {
+  const id = parseUserId(rawId);
+  if (id instanceof Response) return id;
+  const body = await readJsonBody(request);
+  if (body instanceof Response) return body;
+  const unknown = Object.keys(body).filter((key) => !PATCH_FIELDS.includes(key));
+  if (unknown.length > 0) {
+    return Response.json({ error: `unsupported field(s): ${unknown.join(", ")}` }, { status: 400 });
+  }
+  const existing = findExistingUser(id);
+  if (existing instanceof Response) return existing;
+  const store = getUserStore();
+  try {
+    let user = existing;
+    if (body.role !== undefined) {
+      if (!isRole(body.role)) return Response.json({ error: 'role must be "admin" or "user"' }, { status: 400 });
+      user = store.setRole(user.id, body.role);
+    }
+    if (body.status !== undefined) {
+      if (!isStatus(body.status)) return Response.json({ error: 'status must be "active" or "banned"' }, { status: 400 });
+      user = store.setStatus(user.id, body.status);
+    }
+    if (body.password !== undefined || body.passwordHash !== undefined) {
+      user = store.resetPassword(user.id, { password: asString(body.password), passwordHash: asString(body.passwordHash) });
+    }
+    return Response.json({ user });
+  } catch (error) {
+    return storeFailure(error);
+  }
+}
+
+export async function deleteUser(request: Request, rawId: string): Promise<Response> {
+  const id = parseUserId(rawId);
+  if (id instanceof Response) return id;
+  const caller = authenticateRequest(request);
+  if (caller?.kind === "user" && caller.user.id === id) {
+    return Response.json({ error: "an admin cannot delete their own account" }, { status: 409 });
+  }
+  const existing = findExistingUser(id);
+  if (existing instanceof Response) return existing;
+  try {
+    getUserStore().deleteUser(id);
+  } catch (error) {
+    return storeFailure(error);
+  }
+  return new Response(null, { status: 204 });
+}

@@ -1,5 +1,7 @@
 // The API route table: one entry per app/api/**/route.ts (server/routes.test.ts fails when they differ).
 // Static imports, not a runtime glob, so a future `bun build --compile` can bundle every handler.
+import * as adminUsers from "@/app/api/admin/users/route";
+import * as adminUsersId from "@/app/api/admin/users/[id]/route";
 import * as agentIdBashOutput from "@/app/api/agent/[id]/bash-output/route";
 import * as agentId from "@/app/api/agent/[id]/route";
 import * as agentNew from "@/app/api/agent/new/route";
@@ -108,6 +110,8 @@ export type RouteModule = Partial<Record<Method, RouteHandler>>;
 
 // Key: the route's directory under app/api.
 export const ROUTE_MODULES: Record<string, RouteModule> = {
+  "admin/users": adminUsers,
+  "admin/users/[id]": adminUsersId,
   "agent/[id]/bash-output": agentIdBashOutput,
   "agent/[id]": agentId,
   "agent/new": agentNew,

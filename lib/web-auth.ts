@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { deriveSessionSigningKey } from "./web-auth-secret";
+import { deriveSessionSigningKey, resolveWebAuthSecret } from "./web-auth-secret";
 import { isPasswordHash, verifyPassword } from "./web-password-hash";
+import { getUserStore, usersDatabaseExists, type UserAccount } from "./users/store";
 
 export const OMP_WEB_SESSION_COOKIE = "omp_web_session";
 export const OMP_WEB_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
@@ -45,10 +46,15 @@ export function isTrustedProxyRequest(
 }
 
 /** The web session a request belongs to (browser link spec B5): browser-link resumes and composer uploads are honored
- * only for the same one. */
+ * only for the same one. Multi-user sessions (`v2`, fork) name their account; the gate (proxy.ts) validated the
+ * signature before any handler sees the request, so this reads the shape only. */
 export function requestOwner(request: Request): string {
   const cookie = new Bun.CookieMap(request.headers.get("cookie") ?? "").get(OMP_WEB_SESSION_COOKIE);
-  if (cookie) return `session:${createHash("sha256").update(cookie).digest("base64url")}`;
+  if (cookie) {
+    const userId = /^v2\.(\d+)\./.exec(cookie)?.[1];
+    if (userId !== undefined) return `user:${userId}`;
+    return `session:${createHash("sha256").update(cookie).digest("base64url")}`;
+  }
   return isTrustedProxyRequest(request.headers.get(OMP_WEB_TRUSTED_HEADER)) ? "trusted" : "open";
 }
 
@@ -132,4 +138,76 @@ export function isValidWebSession(session: string | undefined, now = Date.now(),
     return false;
   }
   return equal(match[3], expected);
+}
+
+/* ── Multi-user sessions (fork: isolated spaces) ──────────────────────────── */
+
+/**
+ * Signing key for v2 (account-bound) sessions. Derived from the installation secret alone, so multi-user servers
+ * need no `OMP_WEB_PASSWORD_HASH`; when a hash is configured it is mixed in and rotating it invalidates these too.
+ */
+export function userSessionSigningKey(env: NodeJS.ProcessEnv = process.env): string {
+  const secret = resolveWebAuthSecret();
+  const stored = (env[WEB_PASSWORD_HASH_VAR] ?? "").trim();
+  return createHmac("sha256", Buffer.from(secret.key, "base64url"))
+    .update(`omp-web-session-v2\0${secret.salt}\0${isPasswordHash(stored) ? stored : ""}`, "utf8")
+    .digest("base64url");
+}
+
+export interface UserSessionToken {
+  userId: number;
+  epoch: number;
+  expiresAt: number;
+}
+
+/** Parse and cryptographically verify a v2 cookie value; null unless it is a live, correctly signed token. */
+export function parseUserSession(session: string | undefined, now = Date.now(), env: NodeJS.ProcessEnv = process.env): UserSessionToken | null {
+  if (!session) return null;
+  const match = /^v2\.(\d+)\.(\d+)\.(\d{13})\.([A-Za-z0-9_-]{43})$/.exec(session);
+  if (!match) return null;
+  const userId = Number(match[1]);
+  const epoch = Number(match[2]);
+  const expiresAt = Number(match[3]);
+  if (!Number.isSafeInteger(userId) || userId <= 0 || !Number.isSafeInteger(epoch) || !Number.isSafeInteger(expiresAt) || expiresAt <= now) return null;
+  const expected = createHmac("sha256", userSessionSigningKey(env)).update(session.slice(0, session.lastIndexOf(".")), "utf8").digest("base64url");
+  return equal(match[4], expected) ? { userId, epoch, expiresAt } : null;
+}
+
+/** Sign a v2 session cookie for an account at its current token epoch. */
+export function createUserSession(userId: number, epoch: number, now = Date.now(), env: NodeJS.ProcessEnv = process.env): string {
+  const payload = `v2.${userId}.${epoch}.${now + OMP_WEB_SESSION_MAX_AGE_SECONDS * 1000}`;
+  return `${payload}.${createHmac("sha256", userSessionSigningKey(env)).update(payload, "utf8").digest("base64url")}`;
+}
+
+/** Who a request carries: a multi-user account, a legacy password session, or a trusted-proxy pass-through. */
+export type WebIdentity = { kind: "user"; user: UserAccount } | { kind: "legacy" } | { kind: "trusted" };
+
+/** Resolve the identity behind a request, or null. A v2 token must match a live active account at its current
+ * epoch, so a ban or a password reset revokes every issued session instantly. */
+export function authenticateRequest(request: Request, now = Date.now(), env: NodeJS.ProcessEnv = process.env): WebIdentity | null {
+  const cookie = new Bun.CookieMap(request.headers.get("cookie") ?? "").get(OMP_WEB_SESSION_COOKIE);
+  if (cookie) {
+    if (cookie.startsWith("v2.")) {
+      const token = parseUserSession(cookie, now, env);
+      if (!token || !usersDatabaseExists()) return null;
+      const user = getUserStore().findUserById(token.userId);
+      return user && user.status === "active" && user.tokenEpoch === token.epoch ? { kind: "user", user } : null;
+    }
+    return isValidWebSession(cookie, now, env) ? { kind: "legacy" } : null;
+  }
+  return isTrustedProxyRequest(request.headers.get(OMP_WEB_TRUSTED_HEADER), env.OMP_WEB_TRUSTED_HEADER_SHA256) ? { kind: "trusted" } : null;
+}
+
+/** The account behind a v2 request, or null (legacy, trusted or anonymous). */
+export function requestUser(request: Request, now = Date.now(), env: NodeJS.ProcessEnv = process.env): UserAccount | null {
+  const identity = authenticateRequest(request, now, env);
+  return identity?.kind === "user" ? identity.user : null;
+}
+
+/** Admin rights: v2 admins, plus every non-account identity (legacy password, trusted header, open server) —
+ * those are the original single-owner world where one credential owned everything. */
+export function isRequestAdmin(request: Request, now = Date.now(), env: NodeJS.ProcessEnv = process.env): boolean {
+  const identity = authenticateRequest(request, now, env);
+  if (identity === null) return !isWebPasswordEnabled(env) && !usersDatabaseExists();
+  return identity.kind === "user" ? identity.user.role === "admin" : true;
 }

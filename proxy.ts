@@ -1,12 +1,10 @@
 import { isApiRequestOriginAllowed, shouldCheckApiRequestOrigin } from "@/lib/request-security";
 import {
-  isTrustedProxyRequest,
-  isValidWebSession,
+  authenticateRequest,
   isWebPasswordEnabled,
   webPasswordConfigurationProblem,
-  OMP_WEB_SESSION_COOKIE,
-  OMP_WEB_TRUSTED_HEADER,
 } from "@/lib/web-auth";
+import { usersDatabaseExists } from "@/lib/users/store";
 
 // The sign-in screen still needs its JavaScript, CSS and fonts (/assets/, and
 // in dev only Bun's bundles under /_bun/) before a session exists; these and the
@@ -31,8 +29,9 @@ export const UNGATED = /^\/(?:assets\/|(?:favicon\.ico|icon\.svg|icon\.png|icon-
 const redirect = (location: string) => new Response(null, { status: 307, headers: { location } });
 
 /**
- * The password gate and API origin check. A Response answers the request; otherwise it continues, "authenticated"
- * when it carries a session or the trusted header (or no password is set), "public" when it needs neither.
+ * The sign-in gate and API origin check. A Response answers the request; otherwise it continues, "authenticated"
+ * when it carries a valid session — a multi-user v2 cookie naming an active account (fork) or a legacy v1 password
+ * session — or the trusted header (or no auth is configured at all), "public" when it needs neither.
  */
 export function proxy(request: Request): Response | "public" | "authenticated" {
   const url = new URL(request.url);
@@ -52,12 +51,13 @@ export function proxy(request: Request): Response | "public" | "authenticated" {
       headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
     });
   }
-  if (!isWebPasswordEnabled()) {
+  // Multi-user mode (fork): accounts live in users.db; a server with neither accounts nor a
+  // configured password hash stays open exactly as the single-password original does.
+  if (!isWebPasswordEnabled() && !usersDatabaseExists()) {
     return pathname === "/login" ? redirect("/") : "authenticated";
   }
 
-  const hasSession = isTrustedProxyRequest(request.headers.get(OMP_WEB_TRUSTED_HEADER))
-    || isValidWebSession(new Bun.CookieMap(request.headers.get("cookie") ?? "").get(OMP_WEB_SESSION_COOKIE) ?? undefined);
+  const hasSession = authenticateRequest(request) !== null;
   if (pathname === "/login") {
     return hasSession ? redirect("/") : "public";
   }
