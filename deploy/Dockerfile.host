@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1
+# ompweb HOST image (fork phase 4): runs `ompweb host` only — the web server stays on the master.
+# One image serves every user container: the application and the pinned ompweb-omp binary live in
+# the image; each user's isolated state (sessions, settings, secrets, skills) lives on a mounted
+# volume at /home/omp/.omp/agent. Updating = rebuilding/pulling this single image once and
+# recreating the containers; nothing must be updated per user.
+#
+# Build context: the ompweb repository root.
+#   docker build -f deploy/Dockerfile.host -t ompweb-host:local .
+# Override the source without republishing npm:
+#   docker build -f deploy/Dockerfile.host --build-arg OMPWEB_TGZ=/src/ompweb-0.7.4-mt.1.tgz ...
+ARG NODE_IMAGE=node:24-bookworm-slim
+
+FROM ${NODE_IMAGE} AS pkg
+WORKDIR /src
+COPY . /src
+# npm pack runs the package build (prepack) and yields the exact tarball the global install uses.
+RUN npm ci --no-audit --no-fund && npm pack --pack-destination /out
+
+FROM ${NODE_IMAGE}
+ARG OMPWEB_TGZ=
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# The ompweb package once, globally — never again per user.
+COPY --from=pkg /out/*.tgz /tmp/ompweb.tgz
+RUN npm install -g --no-audit --no-fund /tmp/ompweb.tgz && rm -f /tmp/ompweb.tgz
+
+# The ompweb-omp binary pinned by omp-runner.json, downloaded once with its SHA-256 check
+# (fetch-omp), and exposed at a stable path so user volumes never re-download it.
+RUN mkdir -p /opt/ompweb/seed \
+ && PI_CODING_AGENT_DIR=/opt/ompweb/seed OMP_WEB_DISABLE_AUTOUPDATE=1 ompweb fetch-omp \
+ && ln -s "$(find /opt/ompweb/seed -type f -name 'ompweb-omp*' -print -quit)" /usr/local/bin/ompweb-omp
+
+# Unprivileged per-user home; the agent dir is the mount point of the user's private state.
+RUN useradd --create-home --uid 10000 omp
+ENV HOME=/home/omp \
+    PI_CODING_AGENT_DIR=/home/omp/.omp/agent \
+    OMP_WEB_OMP_BIN=/usr/local/bin/ompweb-omp \
+    OMP_WEB_DISABLE_AUTOUPDATE=1
+VOLUME ["/home/omp/.omp/agent"]
+
+COPY --chown=omp:omp deploy/entrypoint-host.sh /usr/local/bin/entrypoint-host.sh
+USER omp
+ENTRYPOINT ["/usr/local/bin/entrypoint-host.sh"]
+CMD []
