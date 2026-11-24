@@ -1449,3 +1449,42 @@ test("a user message with images keeps the taller collapsed cap", () => {
   assert.ok(bubble, "no user bubble rendered");
   assert.equal(bubble.style.maxHeight, "300px");
 });
+
+test("user-bubble overflow toggle appears when a late-loading image pushes past the cap", (t) => {
+  // Layout stub: the bubble fits its text at first; a loaded image grows
+  // its scroll height past the 300px cap without resizing the capped box,
+  // so the ResizeObserver never fires and only an image-load re-measure
+  // can reveal the overflow.
+  const originalResizeObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; }
+    observe() {}
+    disconnect() {}
+  };
+  const proto = window.HTMLElement.prototype;
+  const scrollHeight = Object.getOwnPropertyDescriptor(proto, "scrollHeight");
+  const clientHeight = Object.getOwnPropertyDescriptor(proto, "clientHeight");
+  let grown = false;
+  Object.defineProperty(proto, "scrollHeight", { configurable: true, get() { return grown ? 900 : 300; } });
+  Object.defineProperty(proto, "clientHeight", { configurable: true, get() { return 300; } });
+  t.after(() => {
+    globalThis.ResizeObserver = originalResizeObserver;
+    for (const [name, descriptor] of [["scrollHeight", scrollHeight], ["clientHeight", clientHeight]]) {
+      if (descriptor) Object.defineProperty(proto, name, descriptor);
+      else delete proto[name];
+    }
+  });
+
+  const view = render(React.createElement(MessageView, {
+    message: {
+      role: "user",
+      content: [{ type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", mimeType: "image/png" }],
+    },
+  }));
+  assert.equal(view.queryByRole("button", { name: "Show full input" }), null);
+  const img = view.container.querySelector("img");
+  assert.ok(img, "user-bubble image must render");
+  grown = true;
+  fireEvent.load(img);
+  assert.ok(view.getByRole("button", { name: "Show full input" }), "image load must re-measure overflow and reveal the toggle");
+});
