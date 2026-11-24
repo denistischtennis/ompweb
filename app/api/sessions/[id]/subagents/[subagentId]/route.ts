@@ -1,6 +1,7 @@
 import { apiErrorResponse, opErrorResponse, resolveSessionHostOr404 } from "@/lib/api-utils";
 import { HostOpError } from "@/lib/hosts/link-protocol";
 import { isValidSubagentId } from "@/lib/hosts/session-ops";
+import { guardSession } from "@/lib/users/access";
 
 /**
  * GET /api/sessions/[id]/subagents/[subagentId]?fromByte=N
@@ -17,6 +18,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string; subagentId: string }> }
 ) {
   const { id, subagentId } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   try {
     if (!isValidSubagentId(subagentId)) {
       return Response.json({ error: "Invalid subagent id", code: "invalid_subagent_id" }, { status: 400 });

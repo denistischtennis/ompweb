@@ -2,6 +2,7 @@ import { apiErrorResponse, opErrorResponse, resolveWorkspaceHost } from "@/lib/a
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { isRecord } from "@/lib/type-guards";
 import type { CloneProgress } from "@/lib/git-clone";
+import { claimProject } from "@/lib/users/access";
 
 export async function POST(request: Request, { disableIdleTimeout }: { disableIdleTimeout: () => void }) {
   try {
@@ -15,6 +16,8 @@ export async function POST(request: Request, { disableIdleTimeout }: { disableId
     const cancel = () => { void host.workspaceOps.cancelClone(id).catch(() => {}); };
     const started = await host.workspaceOps.startClone(id, body.parent, body.url.trim());
     if (!started.ok) { request.signal.removeEventListener("abort", cancel); return opErrorResponse(started); }
+    // Phase 3: the cloned project's identity belongs to the member who started it.
+    claimProject(request, id);
     request.signal.addEventListener("abort", cancel, { once: true });
     if (request.signal.aborted) cancel();
     let cursor = 0;

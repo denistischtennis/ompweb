@@ -9,6 +9,7 @@ import type { ProjectUpdate } from "@/lib/hosts/session-ops";
 import { applyProjectPresentation, isReservedLaunchArg, ProjectPathError, type ProjectPresentationUpdate } from "@/lib/project-registry";
 import { cloneDirectoryName, repositoryKey } from "@/lib/git-clone";
 import { isRecord } from "@/lib/type-guards";
+import { canSeeProject, claimProject, projectKeyFor } from "@/lib/users/access";
 import type { ProjectLaunchConfig } from "@/lib/types";
 const MAX_EXTRA_ARGS = 32;
 const MAX_EXTRA_ARG_LENGTH = 256;
@@ -51,7 +52,7 @@ function poolTarget(body: Record<string, unknown>) {
   return { pools, pool };
 }
 
-function pooledPatch(body: Record<string, unknown>) {
+function pooledPatch(request: Request | undefined, body: Record<string, unknown>) {
   const { pools, pool } = poolTarget(body);
   const batch = body.updates !== undefined;
   if (batch && (!Array.isArray(body.updates) || body.projectId !== undefined)) throw new ProjectPathError("invalid_target", "Invalid pool batch target");
@@ -71,7 +72,9 @@ function pooledPatch(body: Record<string, unknown>) {
     return update ? applyProjectPresentation(project, update) : project;
   });
   savePools(pools);
-  return Response.json({ projects: pool.projects.filter((project) => !project.hidden).map((project) => poolManagedProject(pool, project)) });
+  const owned = pool.projects.filter((project) => !project.hidden).map((project) => poolManagedProject(pool, project));
+  for (const project of owned) claimProject(request, projectKeyFor(project));
+  return Response.json({ projects: owned });
 }
 
 // GET /api/projects  →  { projects: ManagedProject[] }
@@ -80,9 +83,10 @@ function pooledPatch(body: Record<string, unknown>) {
 // hostId. Session-discovered paths get no addedAt; the client applies
 // the ordering (manual / most-recently-added by default, or the user's chosen
 // sort with pins first — see lib/project-ordering.ts).
-export async function GET() {
+export async function GET(req?: Request) {
   try {
-    const projects = await listProjectsAllHosts();
+    // Phase 3 scoping: members see only their own projects; everyone else sees all.
+    const projects = (await listProjectsAllHosts()).filter((project) => canSeeProject(req, projectKeyFor(project)));
     // Keep the in-memory browse allowlist warm for registered projects that
     // have no sessions (the in-memory list does not survive restarts, and an
     // empty managed project derives no root from sessions). Only this
@@ -129,15 +133,22 @@ export async function POST(req: Request) {
       if (launchConfig !== undefined) project.launchConfig = launchConfig;
       for (const member of pool.members) project.clonePaths[member.hostId] ??= pathApi(member.projectsRoot).join(member.projectsRoot, project.id);
       savePools(pools);
-      return Response.json({ project: poolManagedProject(pool, project) });
+      const registered = poolManagedProject(pool, project);
+      claimProject(req, projectKeyFor(registered));
+      return Response.json({ project: registered });
     }
     const target = resolveHostOrError(body.hostId);
     if ("response" in target) return target.response;
     const { host } = target;
     const result = await host.sessionOps.addProject(cwd, launchConfig);
     if (!result.ok) return opErrorResponse(result);
-    if (host.id !== LOCAL_HOST_ID) return Response.json({ project: { ...result.value, hostId: host.id } });
+    if (host.id !== LOCAL_HOST_ID) {
+      const project = { ...result.value, hostId: host.id };
+      claimProject(req, projectKeyFor(project));
+      return Response.json({ project });
+    }
     allowFileRoot(result.value.path);
+    claimProject(req, projectKeyFor(result.value));
     return Response.json({ project: result.value });
   } catch (error) {
     if (error instanceof ProjectPathError) {
@@ -161,7 +172,7 @@ export async function PATCH(req: Request) {
   try {
     const body: unknown = await req.json();
     if (!isRecord(body)) throw new ProjectPathError("invalid_target", "Project target must be an object");
-    if (body.poolId !== undefined || body.projectId !== undefined) return pooledPatch(body);
+    if (body.poolId !== undefined || body.projectId !== undefined) return pooledPatch(req, body);
     const rawUpdates: unknown[] = Array.isArray(body.updates)
       ? body.updates
       : body.cwd !== undefined || body.alias !== undefined || body.sortOrder !== undefined || body.pinOrder !== undefined || body.launchConfig !== undefined
@@ -192,6 +203,7 @@ export async function PATCH(req: Request) {
     // in-memory browse authorization behind. Never for another host's paths.
     if (target.host.id === LOCAL_HOST_ID) for (const root of result.value.newRoots) allowFileRoot(root);
     const { projects } = result.value;
+    for (const project of projects) claimProject(req, projectKeyFor(project));
     return Response.json({ projects: target.host.id === LOCAL_HOST_ID ? projects : projects.map((project) => ({ ...project, hostId: target.host.id })) });
   } catch (error) {
     if (error instanceof ProjectPathError) {

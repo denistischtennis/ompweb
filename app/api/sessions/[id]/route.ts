@@ -8,6 +8,7 @@ import { clearExitedRpcSession, getLiveRpcSessionIds, getRpcSession, WebRpcError
 import { forgetSessionReplacementMappings } from "@/lib/message-outbox";
 import { removeSessionWatches } from "@/lib/github/watch-store";
 import { RpcCommandError, RpcCommandTimeoutError } from "@/lib/omp/rpc-process";
+import { guardSession } from "@/lib/users/access";
 
 /** Session-level failures a client retries instead of treating the request as
  *  applied: omp is busy, restarting or was reset, and the session keeps going.
@@ -78,6 +79,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   try {
     const resolved = await resolveSessionHostOr404(id);
     if ("response" in resolved) return resolved.response;
@@ -152,6 +155,8 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   try {
     const { name } = await parseJsonWithinLimit<{ name?: string }>(req, 64 * 1024);
     if (typeof name !== "string" || !name.trim()) {
@@ -206,10 +211,12 @@ export async function PATCH(
 
 // DELETE /api/sessions/[id]
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   try {
     const resolved = await resolveSessionHostOr404(id);
     if ("response" in resolved) return resolved.response;

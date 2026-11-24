@@ -1,10 +1,12 @@
 import { getHost } from "@/lib/hosts/hub";
 import { MaintenanceError, requestMaintenance } from "@/lib/hosts/maintenance-hub";
+import { canSeeHost } from "@/lib/users/access";
 
 /** Browser access stays behind the web gate; no application connection is needed. */
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const headers = { "cache-control": "no-store" };
+  if (!canSeeHost(request, id)) return Response.json({ error: "Unknown host", code: "host_not_found" }, { status: 404, headers });
   if (!getHost(id)) return Response.json({ error: "Unknown host", code: "host_not_found" }, { status: 404, headers });
   try {
     const op = new URL(request.url).searchParams.get("sessions") === "1" ? "listSessions" : "status";

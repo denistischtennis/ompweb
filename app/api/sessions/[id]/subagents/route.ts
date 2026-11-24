@@ -1,6 +1,7 @@
 import { apiErrorResponse, opErrorResponse, resolveSessionHostOr404 } from "@/lib/api-utils";
 import { HostOpError } from "@/lib/hosts/link-protocol";
 import { getRpcSession } from "@/lib/rpc-manager";
+import { guardSession } from "@/lib/users/access";
 
 /**
  * GET /api/sessions/[id]/subagents
@@ -13,6 +14,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(_req, id);
+  if (denied) return denied;
   try {
     const resolved = await resolveSessionHostOr404(id);
     if ("response" in resolved) {

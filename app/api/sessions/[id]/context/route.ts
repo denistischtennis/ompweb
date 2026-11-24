@@ -1,5 +1,6 @@
 import { buildSessionContext } from "@/lib/session-reader";
 import { apiErrorResponse, ifNoneMatchSatisfied, opErrorResponse, resolveSessionHostOr404, strongEtag } from "@/lib/api-utils";
+import { guardSession } from "@/lib/users/access";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { MAX_SYNC_MESSAGES, parseHistoryCursor, selectSessionHistory, type SessionHistoryCursor, type SessionHistoryPage, type SessionSyncResponse } from "@/lib/session-sync";
 
@@ -27,6 +28,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   const url = new URL(req.url);
   const leafId = url.searchParams.get("leafId") ?? undefined;
   const deferThinking = url.searchParams.has("deferThinking");

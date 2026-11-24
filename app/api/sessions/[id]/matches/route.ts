@@ -1,4 +1,5 @@
 import { apiErrorResponse, opErrorResponse, resolveSessionHostOr404 } from "@/lib/api-utils";
+import { guardSession } from "@/lib/users/access";
 import { listSessionMatches } from "@/lib/session-match-listing";
 import { MAX_SEARCH_MATCHES, SEARCH_MATCH_PAGE_SIZE } from "@/lib/session-search-matches";
 import type { SessionContext } from "@/lib/types";
@@ -12,6 +13,8 @@ const MAX_QUERY_LENGTH = 500;
 // shortcut: re-reads and re-ranks the whole session per request; cache per (session, query) if that gets slow.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   const url = new URL(req.url);
   const q = url.searchParams.get("q") ?? "";
   if (q.length > MAX_QUERY_LENGTH) {

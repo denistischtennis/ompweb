@@ -13,6 +13,7 @@ import { abortBrokerRequests } from "@/lib/omp/auth-broker";
 import { mergeProjects } from "@/lib/project-registry";
 import { isApiRequestOriginAllowed, shouldCheckApiRequestOrigin } from "@/lib/request-security";
 import { isRecord } from "@/lib/type-guards";
+import { canSeeHost } from "@/lib/users/access";
 import type { GitOrigin } from "@/lib/workspace-types";
 
 type Context = { params: Promise<{ id: string }> };
@@ -93,6 +94,7 @@ export async function PUT(request: Request, { params }: Context) {
     const { id } = await params;
     // This machine is the master: any join adds it while it is not a member; it never joins by request.
     const host = id === LOCAL_HOST_ID ? null : getHost(id);
+    if (!canSeeHost(request, id)) return fail("Unknown host", "unknown_host", 404);
     if (!host) return fail("Unknown host", "unknown_host", 404);
     const body = await parseJsonWithinLimit<unknown>(request, 8192);
     const projectsRoot = isRecord(body) && Object.keys(body).length === 1 ? body.projectsRoot : undefined;
@@ -153,6 +155,7 @@ export async function DELETE(request: Request, { params }: Context) {
   if (shouldCheckApiRequestOrigin(request) && !isApiRequestOriginAllowed(request)) return fail("Cross-origin API requests are not allowed", "cross_origin_forbidden", 403);
   try {
     const { id } = await params;
+    if (!canSeeHost(request, id)) return fail("Unknown host", "unknown_host", 404);
     let pools: HostPool[];
     try {
       pools = loadPools();

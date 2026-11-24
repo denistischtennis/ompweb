@@ -94,6 +94,19 @@ export class UserStore {
         updated_at INTEGER NOT NULL
       )
     `);
+    // Ownership tables (phase 3): which account created each session/project.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_owners (
+        session_id TEXT NOT NULL PRIMARY KEY,
+        user_id INTEGER NOT NULL
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS project_owners (
+        project_key TEXT NOT NULL PRIMARY KEY,
+        user_id INTEGER NOT NULL
+      )
+    `);
   }
 
   private static map(row: Record<string, unknown> | undefined): UserRow | undefined {
@@ -211,6 +224,48 @@ export class UserStore {
     const row = this.lookupForAuth(username);
     if (!row || row.status !== "active") return null;
     return verifyPassword(password, row.passwordHash) ? UserStore.account(row) : null;
+  }
+
+  /* ── Ownership tables (phase 3): scoping sessions/projects to accounts ─── */
+
+  private setOwner(table: "session_owners" | "project_owners", column: string, key: string, userId: number): void {
+    if (!key) throw new UserInputError(`${column} is required`);
+    if (!this.findUserById(userId)) throw new UserInputError(`no user ${userId}`);
+    this.db.prepare(`INSERT INTO ${table} (${column}, user_id) VALUES (?, ?) ON CONFLICT(${column}) DO UPDATE SET user_id = excluded.user_id`).run(key, userId);
+  }
+
+  /** Records (or moves) the owner of a session. The user must exist. */
+  setSessionOwner(sessionId: string, userId: number): void {
+    this.setOwner("session_owners", "session_id", sessionId.trim(), userId);
+  }
+
+  sessionOwner(sessionId: string): number | null {
+    return asNumber(rowFrom(this.db.prepare("SELECT user_id FROM session_owners WHERE session_id = ?").get(sessionId))?.user_id) ?? null;
+  }
+
+  ownedSessionIds(userId: number): string[] {
+    return this.db.prepare("SELECT session_id FROM session_owners WHERE user_id = ? ORDER BY session_id").all(userId)
+      .flatMap((row) => {
+        const id = rowFrom(row)?.session_id;
+        return typeof id === "string" ? [id] : [];
+      });
+  }
+
+  /** Records (or moves) the owner of a project keyed by the routes' project identity. The user must exist. */
+  setProjectOwner(projectKey: string, userId: number): void {
+    this.setOwner("project_owners", "project_key", projectKey.trim(), userId);
+  }
+
+  projectOwner(projectKey: string): number | null {
+    return asNumber(rowFrom(this.db.prepare("SELECT user_id FROM project_owners WHERE project_key = ?").get(projectKey))?.user_id) ?? null;
+  }
+
+  ownedProjectIds(userId: number): string[] {
+    return this.db.prepare("SELECT project_key FROM project_owners WHERE user_id = ? ORDER BY project_key").all(userId)
+      .flatMap((row) => {
+        const key = rowFrom(row)?.project_key;
+        return typeof key === "string" ? [key] : [];
+      });
   }
 }
 

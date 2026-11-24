@@ -1,14 +1,17 @@
 import { getExitedRpcSession, getRpcSession, WebRpcError } from "@/lib/rpc-manager";
 import { apiErrorResponse, opErrorResponse, resolveSessionHostOr404 } from "@/lib/api-utils";
 import { outboxScope, outboxSnapshot } from "@/lib/message-outbox";
+import { guardSession } from "@/lib/users/access";
 
 /** Every answer, an offline host's 503 included, carries the session's held messages (`outbox`): a tab opening a
  * session with no omp running learns from it that there is an outbox to subscribe to. */
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   const response = await sessionState(id);
   const { entries, settledIds, ...settlements } = outboxSnapshot(id);
   return Response.json({

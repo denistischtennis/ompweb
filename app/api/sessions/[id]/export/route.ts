@@ -1,5 +1,6 @@
 import { apiErrorResponse, opErrorResponse, resolveSessionHostOr404 } from "@/lib/api-utils";
 import { getContentDisposition } from "@/lib/content-disposition";
+import { guardSession } from "@/lib/users/access";
 
 /** Render a session to self-contained HTML with the omp binary on its host (`omp --export`). */
 export async function GET(
@@ -7,6 +8,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
 
   try {
     const resolved = await resolveSessionHostOr404(id);

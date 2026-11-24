@@ -7,6 +7,7 @@ import { validateAgentImages } from "@/lib/image-attachments";
 import { PoolStartError, startPooledSession } from "@/lib/hosts/pool-starts";
 import { HostOpError } from "@/lib/hosts/link-protocol";
 import { isRecord } from "@/lib/type-guards";
+import { claimSession } from "@/lib/users/access";
 
 function newSessionErrorResponse(error: unknown) {
   if (error instanceof PoolStartError) {
@@ -78,6 +79,7 @@ export async function POST(req: Request) {
         const run = () => initialize(session, true);
         return { sessionId: realSessionId, data: await (preparing ? session.withPendingCommand(run, true) : run()) };
       });
+      claimSession(req, result.sessionId);
       return Response.json({ success: true, ...result });
     }
 
@@ -89,6 +91,7 @@ export async function POST(req: Request) {
     const started = await startNewRpcSession(target.host, requestedCwd, toolNames, advisor === true, preparing);
     if (!started.ok) return opErrorResponse(started);
     const { session, realSessionId } = started.value;
+    claimSession(req, realSessionId);
     try {
       const run = async () => Response.json({ success: true, sessionId: realSessionId, data: await initialize(session, false) });
       return await (preparing ? session.withPendingCommand(run, true) : run());

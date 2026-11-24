@@ -3,6 +3,7 @@ import { getHostSoftwareUpdates, updateHostSoftware } from "@/lib/hosts/hub";
 import { HostOpError } from "@/lib/hosts/link-protocol";
 import { isApiRequestOriginAllowed, shouldCheckApiRequestOrigin } from "@/lib/request-security";
 import { isRecord } from "@/lib/type-guards";
+import { canSeeHost } from "@/lib/users/access";
 
 type Context = { params: Promise<{ id: string }> };
 const noStore = { "cache-control": "no-store" };
@@ -17,6 +18,7 @@ function errorResponse(error: unknown): Response {
 export async function GET(request: Request, { params }: Context) {
   try {
     const { id } = await params;
+    if (!canSeeHost(request, id)) return fail("Unknown host", "host_not_found", 404);
     return Response.json(await getHostSoftwareUpdates(id, new URL(request.url).searchParams.get("force") === "1"), { headers: noStore });
   } catch (error) {
     return errorResponse(error);
@@ -28,13 +30,15 @@ export async function POST(request: Request, { params }: Context) {
   if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") return fail("Content-Type must be application/json", "unsupported_media_type", 415);
   try {
     const body = await parseJsonWithinLimit<unknown>(request, 4096);
+    const { id } = await params;
+    if (!canSeeHost(request, id)) return fail("Unknown host", "host_not_found", 404);
     if (!isRecord(body) || Object.keys(body).some((key) => !["target", "version", "force"].includes(key)) || (body.target !== "ompweb" && body.target !== "omp")
       // An omp update interrupts nothing, so there is nothing to force.
       || (body.force !== undefined && (typeof body.force !== "boolean" || body.target === "omp"))
       || typeof body.version !== "string" || body.version.length > 100 || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(body.version)) {
       return fail("target and a release version are required", "invalid_host_update", 400);
     }
-    return Response.json(await updateHostSoftware((await params).id, body.target, body.version, { force: body.force === true }), { status: 202, headers: noStore });
+    return Response.json(await updateHostSoftware(id, body.target, body.version, { force: body.force === true }), { status: 202, headers: noStore });
   } catch (error) {
     return errorResponse(error);
   }

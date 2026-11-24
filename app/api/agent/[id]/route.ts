@@ -3,6 +3,7 @@ import { commandErrorResponse, runAgentCommand } from "@/lib/agent-command";
 import { parseJsonWithinLimit } from "@/lib/bounded-form-data";
 import { MAX_AGENT_COMMAND_REQUEST_BYTES } from "@/lib/image-attachments";
 import { requestOwner } from "@/lib/web-auth";
+import { guardSession } from "@/lib/users/access";
 
 /** Stamp when the handler had the request and when it answered, so the browser
  * can split network time from server time. */
@@ -18,6 +19,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   // Once the body is in, as a socket's ack is stamped after its whole frame: proxies stream uploads through, so the
   // handler starts before a large body has arrived. A body that fails to read is stamped when it failed.
   let receivedAt: number | undefined;
@@ -41,6 +44,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   // Default stays the full shape; `?systemPrompt=0` drops the ~13 KB prompt
   // from the 15 s state poll. Any other value (including "1") keeps it.
   const includeSystemPrompt = new URL(req.url).searchParams.get("systemPrompt") !== "0";

@@ -4,6 +4,7 @@ import { invalidateHostSessionList, sessionSpawnTarget } from "@/lib/hosts/sessi
 import { HostOpError } from "@/lib/hosts/link-protocol";
 import { invalidateSessionCaches } from "@/lib/session-reader";
 import { apiErrorResponse, opErrorResponse, resolveSessionHostOr404 } from "@/lib/api-utils";
+import { guardSession } from "@/lib/users/access";
 
 /**
  * POST /api/sessions/[id]/auto-name
@@ -21,6 +22,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  const denied = guardSession(_req, id);
+  if (denied) return denied;
 
   try {
     // This runs before the path check because omp does not create the session

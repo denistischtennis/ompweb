@@ -1,10 +1,13 @@
 import { apiErrorResponse, opErrorResponse, resolveSessionHostOr404 } from "@/lib/api-utils";
+import { guardSession } from "@/lib/users/access";
 
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string; entryId: string }> },
 ) {
   const { id, entryId } = await params;
+  const denied = guardSession(req, id);
+  if (denied) return denied;
   const blockIndexParam = new URL(req.url).searchParams.get("blockIndex");
   const blockIndex = blockIndexParam === null ? Number.NaN : Number(blockIndexParam);
   if (!Number.isSafeInteger(blockIndex) || blockIndex < 0) {

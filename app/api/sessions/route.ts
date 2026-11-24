@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { listSessionsAllHosts } from "@/lib/hosts/session-index";
 import { getRunningRpcSessions } from "@/lib/rpc-manager";
+import { canSeeSession } from "@/lib/users/access";
 
 // The session list mixes on-disk sessions with the live runningSessionIds set,
 // which changes on every agent turn, so it must never be cached by proxies or
@@ -16,8 +17,9 @@ export async function GET(req: Request) {
   try {
     const filterId = new URL(req.url).searchParams.get("id");
 
-    const sessions = await listSessionsAllHosts();
-    const runningSessions = getRunningRpcSessions();
+    // Phase 3 scoping: members see only their own sessions; everyone else sees all.
+    const sessions = (await listSessionsAllHosts()).filter((s) => canSeeSession(req, s.id));
+    const runningSessions = getRunningRpcSessions().filter((s) => canSeeSession(req, s.id));
     const runningSessionIds = runningSessions.map((s) => s.id);
 
     if (filterId) {

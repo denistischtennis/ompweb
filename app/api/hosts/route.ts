@@ -4,6 +4,8 @@ import { loadPools, savePools, type HostPool } from "@/lib/hosts/pools";
 import { createHost, HostRegistryUnreadableError, readHosts, revokeHost, UnknownHostError, updateHost, type HostRecord } from "@/lib/hosts/registry";
 import { abortBrokerRequests } from "@/lib/omp/auth-broker";
 import { isRecord } from "@/lib/type-guards";
+import { canSeeHost, viewerScope } from "@/lib/users/access";
+import { getUserStore } from "@/lib/users/store";
 
 const MAX_LABEL_LENGTH = 100;
 const noStore = { "cache-control": "no-store" };
@@ -63,17 +65,22 @@ function requestOrigin(req: Request): string {
   }
 }
 
-export function GET() {
+export function GET(req?: Request) {
   let pools: HostPool[];
   try {
     pools = loadPools();
   } catch {
     return poolStorageFailure();
   }
-  return Response.json({ ...hostsSnapshot(), pools }, { headers: noStore });
+  const snapshot = hostsSnapshot();
+  // Phase 3 scoping: members see only the hosts they own; unassigned hosts stay invisible to them.
+  const hosts = viewerScope(req).scoped ? snapshot.hosts.filter((row) => canSeeHost(req, row.id)) : snapshot.hosts;
+  return Response.json({ ...snapshot, hosts, pools }, { headers: noStore });
 }
 
 export async function PUT(req: Request) {
+  // Pool configuration belongs to the whole installation and an owner assignment rides with it: members cannot rewrite it.
+  if (viewerScope(req).scoped) return fail("Admin access required", 403);
   const body = await readBody(req);
   if (!hasOnlyKeys(body, ["pools"]) || !Array.isArray(body.pools)) return fail("pools must be an array", 400);
   let hosts: HostRecord[];
@@ -141,6 +148,13 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   const body = await readBody(req);
+  // Phase 3: assigning a host to an account is an admin act; members cannot move ownership.
+  const rawOwner = body?.ownerUserId;
+  if (rawOwner !== undefined && !(rawOwner === null || (typeof rawOwner === "number" && Number.isSafeInteger(rawOwner) && rawOwner > 0))) {
+    return fail("ownerUserId must be a user id or null", 400);
+  }
+  if (rawOwner !== undefined && viewerScope(req).scoped) return fail("Admin access required", 403);
+  if (typeof rawOwner === "number" && !getUserStore().findUserById(rawOwner)) return fail("Unknown owner user", 404);
   if (body && body.poolId !== undefined) return renamePool(body);
   if (!body || typeof body.id !== "string" || !body.id) return fail("id is required", 400);
   const isLocal = body.id === "local";
@@ -152,9 +166,9 @@ export async function PATCH(req: Request) {
   const { allowAgentStart, shareCredentials } = body;
   if (allowAgentStart !== undefined && typeof allowAgentStart !== "boolean") return fail("allowAgentStart must be a boolean", 400);
   if (shareCredentials !== undefined && typeof shareCredentials !== "boolean") return fail("shareCredentials must be a boolean", 400);
-  if (label === undefined && allowAgentStart === undefined && shareCredentials === undefined) return fail("Nothing to update", 400);
+  if (label === undefined && allowAgentStart === undefined && shareCredentials === undefined && rawOwner === undefined) return fail("Nothing to update", 400);
   try {
-    const updated = updateHost(body.id, { label, allowAgentStart, shareCredentials });
+    const updated = updateHost(body.id, { label, allowAgentStart, shareCredentials, ownerUserId: rawOwner });
     if (shareCredentials === false && !stillShares(updated)) abortBrokerRequests(body.id);
     notifyHostsChange();
     return Response.json({ host: hostsSnapshot().hosts.find((h) => h.id === body.id) }, { headers: noStore });

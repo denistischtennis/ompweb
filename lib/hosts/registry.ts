@@ -12,6 +12,9 @@ export interface HostRecord {
   lastSeenAt: string | null;
   allowAgentStart: boolean;
   shareCredentials: boolean;
+  /** The account that owns this host (phase 3 scoping); null when unassigned. Optional so pre-multi-user
+   *  hosts.json files load unchanged. */
+  ownerUserId?: number | null;
 }
 
 interface HostsFile {
@@ -50,6 +53,7 @@ function parseHostRecord(raw: unknown): HostRecord | null {
     lastSeenAt: typeof r.lastSeenAt === "string" ? r.lastSeenAt : null,
     allowAgentStart: r.allowAgentStart === true,
     shareCredentials: r.shareCredentials === true,
+    ownerUserId: typeof r.ownerUserId === "number" ? r.ownerUserId : null,
   };
 }
 
@@ -112,6 +116,7 @@ export function createHost(label: string): { host: HostRecord; token: string } {
     lastSeenAt: null,
     allowAgentStart: false,
     shareCredentials: false,
+    ownerUserId: null,
   };
   saveHosts([...readHosts(), host]);
   return { host, token };
@@ -132,7 +137,7 @@ export class ReservedHostError extends Error {
   }
 }
 
-export function updateHost(id: string, updates: { label?: string; allowAgentStart?: boolean; shareCredentials?: boolean }): HostRecord {
+export function updateHost(id: string, updates: { label?: string; allowAgentStart?: boolean; shareCredentials?: boolean; ownerUserId?: number | null }): HostRecord {
   if (id === LOCAL_HOST_ID && (updates.allowAgentStart !== undefined || updates.shareCredentials !== undefined)) throw new ReservedHostError();
   const hosts = readHosts();
   const host = hosts.find((h) => h.id === id);
@@ -141,6 +146,7 @@ export function updateHost(id: string, updates: { label?: string; allowAgentStar
   if (updates.label !== undefined) host.label = id === LOCAL_HOST_ID && !updates.label.trim() ? "" : normalizeLabel(updates.label);
   if (updates.allowAgentStart !== undefined) host.allowAgentStart = updates.allowAgentStart;
   if (updates.shareCredentials !== undefined) host.shareCredentials = updates.shareCredentials;
+  if (updates.ownerUserId !== undefined) host.ownerUserId = updates.ownerUserId;
   saveHosts(hosts);
   return host;
 }
