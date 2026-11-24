@@ -272,8 +272,9 @@ export class EventStreamConnection {
 
   async subscribe(id: string, channel: EventStreamChannel): Promise<SubscribeResult> {
     if (this.closed) return { ok: false, status: 404, error: "Unknown event stream connection", code: UNKNOWN_CONNECTION_CODE };
-    // Phase 3 scoping: a member may only attach to sessions their account owns; any other id answers like the route's standard 404.
-    if (this.scope.scoped && this.scope.userId !== undefined && channel.kind === "session" && getUserStore().sessionOwner(channel.sessionId) !== this.scope.userId) {
+    // Phase 3 scoping: a member may only attach to sessions their account owns — session channels, and file channels that name a session; any other id answers like the route's standard 404.
+    const ownedSessionId = channel.kind === "session" ? channel.sessionId : channel.kind === "file" ? channel.sessionId : null;
+    if (this.scope.scoped && this.scope.userId !== undefined && ownedSessionId !== null && getUserStore().sessionOwner(ownedSessionId) !== this.scope.userId) {
       return { ok: false, status: 404, error: "Session not found", code: "session_not_found" };
     }
     this.unsubscribe(id);

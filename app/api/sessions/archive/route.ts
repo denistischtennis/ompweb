@@ -126,7 +126,7 @@ export async function POST(req: Request) {
     const host = resolved?.host;
     const archives = host ? await host.sessionOps.listArchives() : await listArchivedSessionInfos();
     const archive = archives.find((entry) => entry.key === body.key);
-    if (!archive) return Response.json({ error: "Archive not found", code: "archive_not_found" }, { status: 404 });
+    if (!archive || !canSeeSession(req, archive.id)) return Response.json({ error: "Archive not found", code: "archive_not_found" }, { status: 404 });
     if (archive.restorePending) return Response.json({
       error: "This archive is captured by an in-progress or interrupted restore; it is discovery evidence, not a restore target. Inspect the owning restore before manual recovery.",
       code: "archive_restore_unconfirmed",

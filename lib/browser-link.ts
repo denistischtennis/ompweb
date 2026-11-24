@@ -15,6 +15,7 @@ import { isRecord } from "./type-guards";
 import { UPLOAD_ID_RE } from "./upload-limits";
 import { abortUpload, forwardUploadFrame, releaseUploadSink, startUpload, type UploadSink } from "./uploads";
 import { requestOwner } from "./web-auth";
+import { scopeFromOwner } from "./users/access";
 
 // The browser link (docs/specs/2026-11-01-browser-link-design.md): one WebSocket per browser at /api/events/link,
 // carrying every subscription and agent command with the host link's delivery (lib/hosts/link-protocol.ts): sequenced
@@ -222,7 +223,7 @@ function createLink(owner: string): BrowserLink {
   };
   links().set(link.token, link);
   // Its hello is the link's first line (seq 1).
-  link.connection = new EventStreamConnection(undefined, linkSink(link));
+  link.connection = new EventStreamConnection(undefined, linkSink(link), scopeFromOwner(owner));
   return link;
 }
 

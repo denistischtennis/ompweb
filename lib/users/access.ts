@@ -1,7 +1,7 @@
 import { comparableProjectPath } from "../comparable-path";
 import { loadHosts } from "../hosts/registry";
 import { requestUser } from "../web-auth";
-import { getUserStore } from "./store";
+import { getUserStore, usersDatabaseExists } from "./store";
 
 /**
  * Phase 3 ownership scoping. A caller is *scoped* exactly when the request carries
@@ -15,6 +15,14 @@ export interface ViewerScope {
   scoped: boolean;
   /** The member account's id; present iff `scoped`. */
   userId?: number;
+}
+
+/** The scope an owner string (lib/web-auth.ts `requestOwner`) names: only `user:<id>` member accounts restrict a caller; admins and every non-v2 owner see everything. */
+export function scopeFromOwner(owner: string): ViewerScope {
+  const match = /^user:(\d+)$/.exec(owner);
+  if (!match || !usersDatabaseExists()) return { scoped: false };
+  const user = getUserStore().findUserById(Number(match[1]));
+  return user && user.role === "user" ? { scoped: true, userId: user.id } : { scoped: false };
 }
 
 /** The visibility class of a request; `undefined` requests (handlers called without one) are unrestricted. */
