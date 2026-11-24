@@ -12,13 +12,15 @@ interface AdminUser {
   tokenEpoch: number;
   createdAt: number;
   updatedAt: number;
+  /** The stored OpenVPN profile; its presence routes the account's space through the VPN. */
+  vpnProfile?: string | null;
 }
 
 const fieldStyle = { minWidth: 140, minHeight: 36, padding: "6px 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", fontSize: 13 } as const;
 const buttonStyle = { minHeight: 32, padding: "4px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", fontSize: 12, cursor: "pointer" } as const;
 const accentButtonStyle = { ...buttonStyle, background: "var(--accent-strong)", color: "var(--on-accent)", border: "0px" } as const;
 
-/** The admin user panel (fork): create accounts, change roles, reset passwords, ban, unban, delete. */
+/** The admin user panel (fork): create accounts, change roles, reset passwords, ban, unban, delete, set VPN. */
 export function UsersAdmin() {
   const { t } = useI18n();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -96,6 +98,13 @@ export function UsersAdmin() {
     patchUser(user, { password: next });
   }
 
+  /** Prompt for the OpenVPN profile; an empty answer removes it and takes the space off the VPN. */
+  function setVpn(user: AdminUser) {
+    const next = window.prompt(t("usersAdmin.vpnPrompt", { username: user.username }), "");
+    if (next === null) return;
+    patchUser(user, { vpnProfile: next.trim() === "" ? null : next });
+  }
+
   function deleteUser(user: AdminUser) {
     if (!window.confirm(`${t("usersAdmin.delete")}: ${user.username}?`)) return;
     void run(() => fetch(`/api/admin/users/${user.id}`, { method: "DELETE" }));
@@ -142,6 +151,7 @@ export function UsersAdmin() {
                     {user.status === "banned" ? t("usersAdmin.unban") : t("usersAdmin.ban")}
                   </button>
                   <button type="button" disabled={busy} style={buttonStyle} onClick={() => resetPassword(user)}>{t("usersAdmin.resetPassword")}</button>
+                  <button type="button" disabled={busy} style={buttonStyle} onClick={() => setVpn(user)}>{user.vpnProfile ? t("usersAdmin.editVpn") : t("usersAdmin.setVpn")}</button>
                   <button type="button" disabled={busy} style={buttonStyle} onClick={() => deleteUser(user)}>{t("usersAdmin.delete")}</button>
                 </span>
               </td>

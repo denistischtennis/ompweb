@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "../omp/paths";
 import { hashPassword, isPasswordHash, verifyPassword, type PasswordHashOptions } from "../web-password-hash";
-import { asNumber, isRecord } from "../type-guards";
+import { asNumber, asString, isRecord } from "../type-guards";
 
 /**
  * The multi-user account store (fork: isolated spaces). One SQLite database at
@@ -26,6 +26,8 @@ export interface UserAccount {
   tokenEpoch: number;
   createdAt: number;
   updatedAt: number;
+  /** The user's OpenVPN client config (phase 5); its presence means their space routes through the VPN. */
+  vpnProfile: string | null;
 }
 
 interface UserRow extends UserAccount {
@@ -91,9 +93,13 @@ export class UserStore {
         password_hash TEXT NOT NULL,
         token_epoch INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        vpn_profile TEXT
       )
     `);
+    // Databases created before phase 5 gain the column in place.
+    const userColumns = this.db.prepare("PRAGMA table_info(users)").all().map((column) => asString(rowFrom(column)?.name));
+    if (!userColumns.includes("vpn_profile")) this.db.exec("ALTER TABLE users ADD COLUMN vpn_profile TEXT");
     // Ownership tables (phase 3): which account created each session/project.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS session_owners (
@@ -111,16 +117,17 @@ export class UserStore {
 
   private static map(row: Record<string, unknown> | undefined): UserRow | undefined {
     if (!row) return undefined;
-    const { id, username, role, status, password_hash: passwordHash, token_epoch: tokenEpoch, created_at: createdAt, updated_at: updatedAt } = row;
+    const { id, username, role, status, password_hash: passwordHash, token_epoch: tokenEpoch, created_at: createdAt, updated_at: updatedAt, vpn_profile: vpnProfile } = row;
     if (typeof id !== "number" || typeof username !== "string" || !isRole(role) || !isStatus(status) || typeof passwordHash !== "string" || typeof tokenEpoch !== "number" || typeof createdAt !== "number" || typeof updatedAt !== "number") {
       throw new Error(`users.db contains an invalid row (id ${String(id)})`);
     }
-    return { id, username, role, status, passwordHash, tokenEpoch, createdAt, updatedAt };
+    if (vpnProfile !== null && typeof vpnProfile !== "string") throw new Error(`users.db row ${String(id)} has a non-string vpn_profile`);
+    return { id, username, role, status, passwordHash, tokenEpoch, createdAt, updatedAt, vpnProfile: vpnProfile ?? null };
   }
 
   private static account(row: UserRow): UserAccount {
-    const { id, username, role, status, tokenEpoch, createdAt, updatedAt } = row;
-    return { id, username, role, status, tokenEpoch, createdAt, updatedAt };
+    const { id, username, role, status, tokenEpoch, createdAt, updatedAt, vpnProfile } = row;
+    return { id, username, role, status, tokenEpoch, createdAt, updatedAt, vpnProfile };
   }
 
   countUsers(): number {
@@ -209,6 +216,25 @@ export class UserStore {
     if (!user) throw new UserInputError(`no user ${id}`);
     const passwordHash = resolvePassword(input);
     this.db.prepare("UPDATE users SET password_hash = ?, token_epoch = token_epoch + 1, updated_at = ? WHERE id = ?").run(passwordHash, Date.now(), id);
+    return this.findUserById(id)!;
+  }
+
+  /** Store (or clear, with null) the account's OpenVPN client config; setting it routes their space through the VPN. */
+  setVpnProfile(id: number, profile: string | null): UserAccount {
+    const user = this.findUserById(id);
+    if (!user) throw new UserInputError(`no user ${id}`);
+    let stored: string | null = null;
+    if (profile !== null) {
+      if (typeof profile !== "string") throw new UserInputError("vpnProfile must be a string or null");
+      const trimmed = profile.trim();
+      if (trimmed.length > 0) {
+        if (!/^\s*client\b/m.test(trimmed) || !/^\s*remote\s+\S+/m.test(trimmed)) {
+          throw new UserInputError("vpnProfile must be an OpenVPN client config (needs \"client\" and \"remote <host> <port>\" lines)");
+        }
+        stored = trimmed;
+      }
+    }
+    this.db.prepare("UPDATE users SET vpn_profile = ?, updated_at = ? WHERE id = ?").run(stored, Date.now(), id);
     return this.findUserById(id)!;
   }
 

@@ -1,7 +1,7 @@
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "../bounded-form-data";
 import { asString, isRecord } from "../type-guards";
 import { authenticateRequest, isWebPasswordEnabled } from "../web-auth";
-import { provisionUserSpace, revokeOwnedHosts, startUserSpace, stopUserSpace, teardownUserSpace, userSpaceConfig } from "../provision/docker";
+import { provisionUserSpace, reprovisionUserSpace, revokeOwnedHosts, startUserSpace, stopUserSpace, teardownUserSpace, userSpaceConfig } from "../provision/docker";
 import {
   LastAdminError,
   UserInputError,
@@ -107,7 +107,7 @@ export async function getUser(request: Request, rawId: string): Promise<Response
   return user instanceof Response ? user : Response.json({ user });
 }
 
-const PATCH_FIELDS: string[] = ["role", "status", "password", "passwordHash"];
+const PATCH_FIELDS: string[] = ["role", "status", "password", "passwordHash", "vpnProfile"];
 
 export async function patchUser(request: Request, rawId: string): Promise<Response> {
   const id = parseUserId(rawId);
@@ -134,8 +134,21 @@ export async function patchUser(request: Request, rawId: string): Promise<Respon
     if (body.password !== undefined || body.passwordHash !== undefined) {
       user = store.resetPassword(user.id, { password: asString(body.password), passwordHash: asString(body.passwordHash) });
     }
-    // Keep a provisioned docker space in sync with the account's state (phase 4).
-    if (userSpaceConfig() && body.status !== undefined) {
+    if (body.vpnProfile !== undefined) {
+      const rawVpn = body.vpnProfile;
+      if (typeof rawVpn !== "string" && rawVpn !== null) return Response.json({ error: "vpnProfile must be a string or null" }, { status: 400 });
+      user = store.setVpnProfile(user.id, rawVpn);
+    }
+    // Keep a provisioned docker space in sync with the account's state (phases 4+5).
+    const space = userSpaceConfig();
+    if (space && body.vpnProfile !== undefined) {
+      try {
+        await reprovisionUserSpace(user, space);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return Response.json({ user, error: `profile saved but the space could not be rebuilt: ${reason}` }, { status: 502 });
+      }
+    } else if (space && body.status !== undefined) {
       if (user.status === "banned") await stopUserSpace(user.username);
       else await startUserSpace(user.username);
     }
