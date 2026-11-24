@@ -1,15 +1,30 @@
 "use client";
 
 import { LockKeyhole } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 
 /** `initialPassword`: what was typed into app/index.html's static copy of this form before the bundle ran. */
 export function LoginForm({ initialPassword = "" }: { initialPassword?: string }) {
   const { t } = useI18n();
   const [password, setPassword] = useState(initialPassword);
+  const [username, setUsername] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [multiUser, setMultiUser] = useState(false);
+  // Ask the server whether accounts exist; only then does the form grow a username field.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/web-auth/session")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((info: { multiUser?: unknown } | null) => {
+        if (!cancelled && info && typeof info.multiUser === "boolean") setMultiUser(info.multiUser);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -19,7 +34,7 @@ export function LoginForm({ initialPassword = "" }: { initialPassword?: string }
       const response = await fetch("/api/web-auth/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify(multiUser ? { username, password } : { password }),
       });
       if (!response.ok) {
         setError(t("login.incorrectPassword"));
@@ -49,6 +64,21 @@ export function LoginForm({ initialPassword = "" }: { initialPassword?: string }
         <h1 id="login-title" className="display-serif" style={{ margin: 0, fontSize: 28, lineHeight: 1.1, color: "var(--text)" }}>{t("login.title")}</h1>
         <p style={{ margin: "10px 0 24px", color: "var(--text-muted)", fontSize: 13, lineHeight: 1.5 }}>{t("login.description")}</p>
         <form onSubmit={signIn} style={{ display: "grid", gap: 14 }}>
+          {multiUser && (
+            <label htmlFor="web-username" style={{ display: "grid", gap: 6, color: "var(--text-muted)", fontSize: 12, fontWeight: 600 }}>
+              {t("login.username")}
+              <input
+                id="web-username"
+                className="ui-focus-ring"
+                type="text"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+                required
+                style={{ width: "100%", minHeight: 44, padding: "9px 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", fontSize: 14 }}
+              />
+            </label>
+          )}
           <label htmlFor="web-password" style={{ display: "grid", gap: 6, color: "var(--text-muted)", fontSize: 12, fontWeight: 600 }}>
             {t("login.password")}
             <input

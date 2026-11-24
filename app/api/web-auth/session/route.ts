@@ -1,6 +1,7 @@
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { requestProtocol } from "@/lib/request-security";
 import {
+  authenticateRequest,
   createWebSession,
   createUserSession,
   isValidWebPassword,
@@ -8,7 +9,7 @@ import {
   OMP_WEB_SESSION_COOKIE,
   OMP_WEB_SESSION_MAX_AGE_SECONDS,
 } from "@/lib/web-auth";
-import { getUserStore, isMultiUserMode } from "@/lib/users/store";
+import { getUserStore, isMultiUserMode, usersDatabaseExists } from "@/lib/users/store";
 
 const MAX_PASSWORD_REQUEST_BYTES = 8 * 1024;
 
@@ -20,6 +21,17 @@ function sessionCookie(request: Request, value: string, maxAge = OMP_WEB_SESSION
     maxAge,
     path: "/",
   }).serialize();
+}
+
+/** What the sign-in screen needs before credentials: whether this server has accounts and who is signed in. */
+export async function GET(request: Request): Promise<Response> {
+  const identity = authenticateRequest(request);
+  const open = !isWebPasswordEnabled() && !usersDatabaseExists();
+  return Response.json({
+    authenticated: identity !== null || open,
+    multiUser: isMultiUserMode(),
+    user: identity?.kind === "user" ? identity.user : null,
+  });
 }
 
 /** Sign in: with an account name in multi-user mode (fork), or with the bare password in the single-password world. */

@@ -47,6 +47,7 @@ const McpConfig = dynamic(() => import("./McpConfig").then((module) => module.Mc
 const AgentsConfig = dynamic(() => import("./AgentsConfig").then((module) => module.AgentsConfig), { loading: SettingsTabLoading });
 const HostsConfig = dynamic(() => import("./HostsConfig").then((module) => module.HostsConfig), { loading: SettingsTabLoading });
 const UsageConfig = dynamic(() => import("./UsageConfig").then((module) => module.UsageConfig), { loading: SettingsTabLoading });
+const UsersAdmin = dynamic(() => import("./UsersAdmin").then((module) => module.UsersAdmin), { loading: SettingsTabLoading });
 
 type WindowsServiceStatus = {
   isWindows: boolean;
@@ -1967,6 +1968,16 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                 <HostsConfig />
               </div>
             )}
+            {/* USERS TAB (fork: multi-user) */}
+            {currentTab === "users" && (
+              <div role="tabpanel" id="settings-panel-users" aria-labelledby="settings-tab-users" className="settings-panel-inner" style={{ padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", gap: 16 }}>
+                <div style={{ marginBottom: 4 }}>
+                  <h2 className="display-serif" style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text)", letterSpacing: "-0.01em" }}>{t("usersAdmin.title")}</h2>
+                </div>
+                <UsersAdmin />
+              </div>
+            )}
+
 
             {/* NOTIFICATIONS TAB */}
             {currentTab === "notifications" && (
