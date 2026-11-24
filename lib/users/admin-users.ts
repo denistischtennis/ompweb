@@ -1,6 +1,7 @@
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "../bounded-form-data";
 import { asString, isRecord } from "../type-guards";
 import { authenticateRequest, isWebPasswordEnabled } from "../web-auth";
+import { provisionUserSpace, revokeOwnedHosts, startUserSpace, stopUserSpace, teardownUserSpace, userSpaceConfig } from "../provision/docker";
 import {
   LastAdminError,
   UserInputError,
@@ -76,16 +77,26 @@ export async function listUsers(): Promise<Response> {
 export async function createUser(request: Request): Promise<Response> {
   const body = await readJsonBody(request);
   if (body instanceof Response) return body;
+  let user: UserAccount;
   try {
-    const user = getUserStore().createUser({
+    user = getUserStore().createUser({
       username: body.username,
       role: body.role ?? "user",
       password: asString(body.password),
       passwordHash: asString(body.passwordHash),
     });
-    return Response.json({ user }, { status: 201 });
   } catch (error) {
     return storeFailure(error);
+  }
+  const space = userSpaceConfig();
+  if (!space) return Response.json({ user }, { status: 201 });
+  try {
+    const { hostId } = await provisionUserSpace(user, space);
+    return Response.json({ user, hostId }, { status: 201 });
+  } catch (error) {
+    // The account exists even though its space did not come up; say so instead of pretending success.
+    const reason = error instanceof Error ? error.message : String(error);
+    return Response.json({ user, error: `account created but provisioning failed: ${reason}` }, { status: 502 });
   }
 }
 
@@ -123,6 +134,11 @@ export async function patchUser(request: Request, rawId: string): Promise<Respon
     if (body.password !== undefined || body.passwordHash !== undefined) {
       user = store.resetPassword(user.id, { password: asString(body.password), passwordHash: asString(body.passwordHash) });
     }
+    // Keep a provisioned docker space in sync with the account's state (phase 4).
+    if (userSpaceConfig() && body.status !== undefined) {
+      if (user.status === "banned") await stopUserSpace(user.username);
+      else await startUserSpace(user.username);
+    }
     return Response.json({ user });
   } catch (error) {
     return storeFailure(error);
@@ -142,6 +158,10 @@ export async function deleteUser(request: Request, rawId: string): Promise<Respo
     getUserStore().deleteUser(id);
   } catch (error) {
     return storeFailure(error);
+  }
+  if (userSpaceConfig()) {
+    revokeOwnedHosts(id);
+    await teardownUserSpace(existing.username).catch(() => undefined);
   }
   return new Response(null, { status: 204 });
 }
