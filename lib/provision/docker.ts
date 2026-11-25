@@ -13,7 +13,7 @@ import type { UserAccount } from "../users/store";
  * ompweb-omp binary live in the image, and each user's whole mutable state is a
  * named volume mounted at /home/omp/.omp/agent. Updating means rebuilding/pulling
  * one image and recreating the containers - nothing is updated per user. New spaces
- * are seeded from the master's own skills and mcp.json (`cp -rn`: user edits always win).
+ * are seeded from the master's own skills, mcp.json, models.yml and config.yml (`cp -rn`: user edits always win).
  * Provisioning is active only when both OMP_WEB_HOST_IMAGE and OMP_WEB_PUBLIC_URL
  * are configured; without them accounts exist but no container is started, which
  * keeps single-host installs and the test suite untouched.
@@ -90,11 +90,17 @@ function writeSpaceFile(username: string, name: string, content: string): string
   return path;
 }
 
-/** The master's shipped agent defaults: its mcp.json and everything under skills/. */
+/** The master's shipped agent defaults: its mcp.json, model providers (models.yml), agent config
+ * (config.yml) and everything under skills/. Without models.yml a member's host knows no provider and
+ * every send fails with "Model not found" even though the master can address the model. */
 function collectSeedFiles(agentDir: string): Record<string, string> {
   const files: Record<string, string> = {};
   const mcpPath = join(agentDir, "mcp.json");
   if (existsSync(mcpPath)) files["mcp.json"] = readFileSync(mcpPath, "utf8");
+  const modelsPath = join(agentDir, "models.yml");
+  if (existsSync(modelsPath)) files["models.yml"] = readFileSync(modelsPath, "utf8");
+  const configPath = join(agentDir, "config.yml");
+  if (existsSync(configPath)) files["config.yml"] = readFileSync(configPath, "utf8");
   const walk = (dir: string, prefix: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const abs = join(dir, entry.name);
