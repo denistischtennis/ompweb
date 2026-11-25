@@ -184,14 +184,18 @@ export function AppShell({ appName }: { appName: string }) {
     setNewSessionCreation((current) => current.id === newSessionCreationId && current.initialization === undefined ? { ...current, initialization } : current);
   }, [newSessionCreationId]);
   const [newSessionPoolProject, setNewSessionPoolProject] = useState<ManagedProject | null>(null);
-  const [workspaceOptions, setWorkspaceOptions] = useState<{ projects: ManagedProject[]; selectedProject: string | null; cwd: string | null; hostId: string }>({ projects: [], selectedProject: null, cwd: null, hostId: LOCAL_HOST_ID });
+  const { hosts, pools, poolsLoaded } = useHostRows();
+  // Default host for the current viewer: this machine when they may address it, otherwise their own host.
+  // A scoped member's visible list (lib/users/access.ts) holds only their own space, so falling back to
+  // LOCAL_HOST_ID would point every host-less default (new session, add workspace) at this machine → host_not_found.
+  const defaultHostId = hosts?.some((host) => host.id === LOCAL_HOST_ID) ? LOCAL_HOST_ID : hosts?.[0]?.id ?? LOCAL_HOST_ID;
+  const [workspaceOptions, setWorkspaceOptions] = useState<{ projects: ManagedProject[]; selectedProject: string | null; cwd: string | null; hostId: string }>({ projects: [], selectedProject: null, cwd: null, hostId: defaultHostId });
   const [addProjectOpen, setAddProjectOpen] = useState(false);
-  const [addProjectHostId, setAddProjectHostId] = useState<string>(LOCAL_HOST_ID);
-  const openAddProject = useCallback((open: boolean, hostId: string = LOCAL_HOST_ID) => {
+  const [addProjectHostId, setAddProjectHostId] = useState<string>(defaultHostId);
+  const openAddProject = useCallback((open: boolean, hostId: string = defaultHostId) => {
     setAddProjectHostId(hostId);
     setAddProjectOpen(open);
-  }, []);
-  const { hosts, pools, poolsLoaded } = useHostRows();
+  }, [defaultHostId]);
   const handleWorkspaceOptionsChange = useCallback((projects: ManagedProject[], selectedProject: string | null, cwd: string | null, hostId: string) => {
     setWorkspaceOptions({ projects, selectedProject, cwd, hostId });
   }, []);
