@@ -19,7 +19,7 @@ import {
 import { browserTransportState } from "./web-settings";
 import { isDeltaUpdate, mergeDeltaUpdates } from "./message-delta";
 import { isRecord } from "./type-guards";
-import type { ViewerScope } from "./users/access";
+import { hostVisibleToScope, type ViewerScope } from "./users/access";
 import { getUserStore } from "./users/store";
 
 // Server half of the multiplexed live-event stream (see event-stream-protocol).
@@ -215,6 +215,13 @@ function scopeRunningPayload(data: unknown, userId: number): unknown {
   return data;
 }
 
+/** A scoped member's `hosts`-channel payload: only the hosts their account owns (plus nothing else).
+ * Mirrors GET /api/hosts's `canSeeHost` filter, applied per connection at send time, never to the shared snapshot. */
+function scopeHostsPayload(data: unknown, scope: ViewerScope): unknown {
+  if (!isRecord(data) || !Array.isArray(data.hosts)) return data;
+  return { ...data, hosts: data.hosts.filter((row) => isRecord(row) && typeof row.id === "string" && hostVisibleToScope(scope, row.id)) };
+}
+
 export class EventStreamConnection {
   readonly id = randomUUID();
   /** The SSE response body; null when the caller supplied its own sink. */
@@ -280,11 +287,16 @@ export class EventStreamConnection {
     this.unsubscribe(id);
     const subscription = new Subscription(id, channel.kind === "session");
     this.subscriptions.set(id, subscription);
-    const scopedRunning = this.scope.scoped && this.scope.userId !== undefined && channel.kind === "running";
+    const scopedPayload = (data: unknown): unknown => {
+      if (!this.scope.scoped || this.scope.userId === undefined) return data;
+      if (channel.kind === "running") return scopeRunningPayload(data, this.scope.userId);
+      if (channel.kind === "hosts") return scopeHostsPayload(data, this.scope);
+      return data;
+    };
     const handle: SubscriptionHandle = {
       get active() { return subscription.active; },
       open: () => { this.control({ type: "open", sub: id }); },
-      send: (data) => this.deliver(subscription, scopedRunning ? scopeRunningPayload(data, this.scope.userId!) : data),
+      send: (data) => this.deliver(subscription, scopedPayload(data)),
       end: () => this.end(subscription),
       setDetach: (detach) => {
         if (subscription.active) subscription.detach = detach;
