@@ -20,6 +20,7 @@ import { browserTransportState } from "./web-settings";
 import { isDeltaUpdate, mergeDeltaUpdates } from "./message-delta";
 import { isRecord } from "./type-guards";
 import { hostVisibleToScope, type ViewerScope } from "./users/access";
+import { requestOwner } from "./web-auth";
 import { getUserStore } from "./users/store";
 
 // Server half of the multiplexed live-event stream (see event-stream-protocol).
@@ -232,12 +233,18 @@ export class EventStreamConnection {
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly signal: AbortSignal | undefined;
   /** Whose view this connection serves (lib/users/access.ts); scoped members receive only their own sessions' frames. */
-  private readonly scope: ViewerScope;
+  readonly scope: ViewerScope;
+  /** The request that opened the connection, kept so channel opens re-check host visibility (lib/api-utils.ts); undefined for a connection a socket built from an owner string. */
+  readonly request: Request | undefined;
+  /** The web session that opened it (lib/web-auth.ts requestOwner); a `user:` connection answers POST /api/events from no other account. */
+  readonly owner: string | undefined;
 
-  /** `options.heartbeatMs` overrides the keep-alive for this connection's SSE sink. `scope` restricts what may be subscribed. */
-  constructor(signal?: AbortSignal, sink?: FrameSink | { heartbeatMs?: number }, scope: ViewerScope = { scoped: false }) {
+  /** `options.heartbeatMs` overrides the keep-alive for this connection's SSE sink. `scope` restricts what may be subscribed; `request` and `owner` say who opened it (an HTTP route passes its request, a browser link its owner). */
+  constructor(signal?: AbortSignal, sink?: FrameSink | { heartbeatMs?: number }, scope: ViewerScope = { scoped: false }, request?: Request, owner?: string) {
     this.signal = signal;
     this.scope = scope;
+    this.request = request;
+    this.owner = owner ?? (request === undefined ? undefined : requestOwner(request));
     if (sink && "write" in sink) {
       this.sink = sink;
       this.stream = null;
@@ -277,11 +284,17 @@ export class EventStreamConnection {
     return this.subscriptions.size;
   }
 
+  /** Whether this connection's viewer may see `sessionId`: the rule of lib/users/access.ts `canSeeSession`, read from the stored scope — a member sees only the sessions their account owns, and an ownerless frame reaches only unscoped viewers. */
+  canSeeSession(sessionId: string | null | undefined): boolean {
+    if (!this.scope.scoped || this.scope.userId === undefined) return true;
+    return sessionId !== undefined && sessionId !== null && getUserStore().sessionOwner(sessionId) === this.scope.userId;
+  }
+
   async subscribe(id: string, channel: EventStreamChannel): Promise<SubscribeResult> {
     if (this.closed) return { ok: false, status: 404, error: "Unknown event stream connection", code: UNKNOWN_CONNECTION_CODE };
     // Phase 3 scoping: a member may only attach to sessions their account owns — session channels, and file channels that name a session; any other id answers like the route's standard 404.
     const ownedSessionId = channel.kind === "session" ? channel.sessionId : channel.kind === "file" ? channel.sessionId : null;
-    if (this.scope.scoped && this.scope.userId !== undefined && ownedSessionId !== null && getUserStore().sessionOwner(ownedSessionId) !== this.scope.userId) {
+    if (ownedSessionId !== null && !this.canSeeSession(ownedSessionId)) {
       return { ok: false, status: 404, error: "Session not found", code: "session_not_found" };
     }
     this.unsubscribe(id);
@@ -305,7 +318,7 @@ export class EventStreamConnection {
     };
     let result: SubscribeResult;
     try {
-      result = await openChannel(channel, handle);
+      result = await openChannel(channel, handle, this);
     } catch (error) {
       result = { ok: false, status: 500, error: String(error), code: "subscribe_failed" };
     }
@@ -588,7 +601,7 @@ function queueUpdate(queue: QueuedFrame[], data: Record<string, unknown>, at: nu
   }
 }
 
-async function openChannel(channel: EventStreamChannel, handle: SubscriptionHandle): Promise<SubscribeResult> {
+async function openChannel(channel: EventStreamChannel, handle: SubscriptionHandle, connection: EventStreamConnection): Promise<SubscribeResult> {
   switch (channel.kind) {
     case "running":
       return openRunningChannel(handle);
@@ -597,9 +610,9 @@ async function openChannel(channel: EventStreamChannel, handle: SubscriptionHand
     case "session":
       return openSessionChannel(channel.sessionId, handle);
     case "file":
-      return openFileChannel(channel.path, channel.sessionId, channel.hostId, handle);
+      return openFileChannel(channel.path, channel.sessionId, channel.hostId, handle, connection.request);
     case "host-tools":
-      return openHostToolsChannel(handle);
+      return openHostToolsChannel(handle, connection);
     case "hosts":
       return openHostsChannel(handle);
   }
@@ -654,9 +667,13 @@ function openNotificationsChannel(clientId: string, handle: SubscriptionHandle):
 
 // Host tool calls from sessions no tab is watching: every tab holds one, so a
 // session keeps its host tools while the user views another.
-function openHostToolsChannel(handle: SubscriptionHandle): SubscribeResult {
+function openHostToolsChannel(handle: SubscriptionHandle, connection: EventStreamConnection): SubscribeResult {
   handle.open();
-  handle.setDetach(subscribeHostToolCalls((call) => handle.send({ type: "host_tool_call", ...call })));
+  // A member's tab holds only the sessions their account owns: another member's call (and one naming no session)
+  // never reaches it.
+  handle.setDetach(subscribeHostToolCalls((call) => {
+    if (connection.canSeeSession(call.sessionId)) handle.send({ type: "host_tool_call", ...call });
+  }));
   return SUBSCRIBED;
 }
 
@@ -725,8 +742,8 @@ function openSessionChannel(sessionId: string, handle: SubscriptionHandle): Subs
 }
 
 // Change notifications for one file open in the viewer.
-async function openFileChannel(rawPath: string, sessionId: string | null, hostId: string | undefined, handle: SubscriptionHandle): Promise<SubscribeResult> {
-  const resolved = await resolveWorkspaceHost(hostId, sessionId);
+async function openFileChannel(rawPath: string, sessionId: string | null, hostId: string | undefined, handle: SubscriptionHandle, request?: Request): Promise<SubscribeResult> {
+  const resolved = await resolveWorkspaceHost(hostId, sessionId, { request });
   if ("response" in resolved) {
     const body = await resolved.response.json();
     return { ok: false, status: resolved.response.status, error: body.error, code: body.code };

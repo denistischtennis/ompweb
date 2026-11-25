@@ -29,7 +29,7 @@ services:
       OMP_WEB_HOST_IMAGE: local/ompweb-host:0.7.4-mt.1
       OMP_WEB_PUBLIC_URL: http://192.168.1.247:1338
       # Shared tool binaries + gh login mounted into every user space. Granular src:dst
-      OMP_WEB_RO_MOUNTS: /root/projects/ompweb-tools/opt/ida-pro-9.4:/opt/ida-pro-9.4,/root/projects/ompweb-tools/root/.local:/home/omp/.local,/root/projects/ompweb-tools/root/.cache:/home/omp/.cache,/root/projects/ompweb-tools/root/.omp/puppeteer:/home/omp/.omp/puppeteer,/root/ompweb-1338/gh-hosts.yml:/home/omp/.config/gh/hosts.yml
+      OMP_WEB_RO_MOUNTS: /root/projects/ompweb-tools/opt/ida-pro-9.4:/opt/ida-pro-9.4,/root/projects/ompweb-tools/root/.local:/home/omp/.local,/root/projects/ompweb-tools/root/.cache:/home/omp/.cache,/root/projects/ompweb-tools/root/.omp/puppeteer:/home/omp/.omp/puppeteer,/root/projects/ompweb/deploy/gh-hosts.yml:/home/omp/.config/gh/hosts.yml
     volumes:
       - masteragent:/root/.omp # dedicated server agent home (docker volume), NOT the host CLI /root/.omp
       - /root/projects:/root/projects # mirrored path so session cwds stay valid

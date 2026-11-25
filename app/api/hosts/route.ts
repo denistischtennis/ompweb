@@ -1,10 +1,10 @@
 import { isClusterMember, leaveCluster, sharesCredentials } from "@/lib/hosts/cluster";
 import { closeHostLink, hostsSnapshot, listHosts, notifyHostsChange } from "@/lib/hosts/hub";
-import { loadPools, savePools, type HostPool } from "@/lib/hosts/pools";
+import { loadPools, poolManagedProject, savePools, type HostPool } from "@/lib/hosts/pools";
 import { createHost, HostRegistryUnreadableError, readHosts, revokeHost, UnknownHostError, updateHost, type HostRecord } from "@/lib/hosts/registry";
 import { abortBrokerRequests } from "@/lib/omp/auth-broker";
 import { isRecord } from "@/lib/type-guards";
-import { canSeeHost, viewerScope } from "@/lib/users/access";
+import { canSeeHost, canSeeProject, projectKeyFor, viewerScope } from "@/lib/users/access";
 import { getUserStore, usersDatabaseExists } from "@/lib/users/store";
 
 const MAX_LABEL_LENGTH = 100;
@@ -73,8 +73,10 @@ export function GET(req?: Request) {
     return poolStorageFailure();
   }
   const snapshot = hostsSnapshot();
-  // Phase 3 scoping: members see only the hosts they own; unassigned hosts stay invisible to them.
-  const hosts = viewerScope(req).scoped ? snapshot.hosts.filter((row) => canSeeHost(req, row.id)) : snapshot.hosts;
+  // Phase 3 scoping: members see only the hosts they own and the projects they can see; pools keep their structure even when emptied of visible projects.
+  const scoped = viewerScope(req).scoped;
+  const hosts = scoped ? snapshot.hosts.filter((row) => canSeeHost(req, row.id)) : snapshot.hosts;
+  if (scoped) pools = pools.map((pool) => ({ ...pool, projects: pool.projects.filter((project) => canSeeProject(req, projectKeyFor(poolManagedProject(pool, project)))) }));
   return Response.json({ ...snapshot, hosts, pools }, { headers: noStore });
 }
 
@@ -127,6 +129,8 @@ export async function PUT(req: Request) {
 }
 
 export async function POST(req: Request) {
+  // Registering a host hands back its plaintext token, so only unscoped callers may create one.
+  if (viewerScope(req).scoped) return fail("Admin access required", 403);
   const body = await readBody(req);
   const label = parseLabel(body?.label);
   if (!label) return fail(`label must be a non-empty string of at most ${MAX_LABEL_LENGTH} characters`, 400);

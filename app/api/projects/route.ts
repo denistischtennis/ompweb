@@ -133,6 +133,8 @@ export async function POST(req: Request) {
       const matches = pool.projects.filter((project) => project.origin === body.origin || (key !== null && repositoryKey(project.origin) === key));
       if (matches.length > 1) throw new Error("Ambiguous pool project origin");
       let project = matches[0];
+      // Re-registering an origin someone else claimed is addressing it: same gate as PATCH; a new project needs none (the creator claims it).
+      if (project && !canAddressProject(req, projectKeyFor(poolManagedProject(pool, project)))) throw new ProjectPathError("project_not_found", "Registered project not found");
       if (!project) {
         project = {
           id: randomUUID(), name: typeof body.name === "string" ? body.name.trim() : cloneDirectoryName(body.origin)!,
@@ -244,7 +246,8 @@ export async function DELETE(req: Request) {
     if (body.poolId !== undefined || body.projectId !== undefined) {
       const { pools, pool } = poolTarget(body);
       const project = pool.projects.find((item) => item.id === body.projectId);
-      if (!project) throw new ProjectPathError("project_not_found", "Registered project not found");
+      // Hiding is addressing too: a member may only hide their own or unclaimed projects, else the same not-found answer.
+      if (!project || !canAddressProject(req, projectKeyFor(poolManagedProject(pool, project)))) throw new ProjectPathError("project_not_found", "Registered project not found");
       project.hidden = true;
       savePools(pools);
       return Response.json({ success: true });

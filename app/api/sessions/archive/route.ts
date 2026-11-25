@@ -121,7 +121,7 @@ export async function POST(req: Request) {
       return Response.json({ error: "Host ID must be a nonempty string", code: "invalid_host_id" }, { status: 400 });
     }
     const hostId = body.hostId === undefined ? LOCAL_HOST_ID : body.hostId as string;
-    const resolved = hostId === LOCAL_HOST_ID ? null : resolveHostOrError(hostId);
+    const resolved = hostId === LOCAL_HOST_ID ? null : resolveHostOrError(hostId, req);
     if (resolved && "response" in resolved) return resolved.response;
     const host = resolved?.host;
     const archives = host ? await host.sessionOps.listArchives() : await listArchivedSessionInfos();

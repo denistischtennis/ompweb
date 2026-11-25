@@ -10,7 +10,7 @@ export async function POST(request: Request, { disableIdleTimeout }: { disableId
     if (!isRecord(body) || typeof body.id !== "string" || typeof body.parent !== "string" || typeof body.url !== "string") return Response.json({ error: "Invalid clone request", code: "invalid_request" }, { status: 400 });
     // A member may only clone into a project they can see; invisible keys are the same 404 the projects routes answer.
     if (!canSeeProject(request, body.id)) return Response.json({ error: "Registered project not found", code: "project_not_found" }, { status: 404 });
-    const resolved = await resolveWorkspaceHost(body.hostId, null);
+    const resolved = await resolveWorkspaceHost(body.hostId, null, { request });
     if ("response" in resolved) return resolved.response;
     const { host } = resolved;
     const id = body.id;
@@ -61,7 +61,7 @@ export async function DELETE(request: Request) {
     if (!isRecord(body) || typeof body.id !== "string") return Response.json({ error: "Invalid clone request", code: "invalid_request" }, { status: 400 });
     // Cancelling another member's clone must fail exactly like fetching an invisible project.
     if (!canSeeProject(request, body.id)) return Response.json({ error: "Registered project not found", code: "project_not_found" }, { status: 404 });
-    const resolved = await resolveWorkspaceHost(body.hostId, null);
+    const resolved = await resolveWorkspaceHost(body.hostId, null, { request });
     if ("response" in resolved) return resolved.response;
     const result = await resolved.host.workspaceOps.cancelClone(body.id);
     return result.ok ? Response.json({ ok: true, ...result.value }) : opErrorResponse(result);

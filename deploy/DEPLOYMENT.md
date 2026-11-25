@@ -40,6 +40,9 @@ LAN URL: `http://192.168.1.247:1338` (update `OMP_WEB_PUBLIC_URL` if the host IP
 - **Provisioning active** only when both `OMP_WEB_HOST_IMAGE` and `OMP_WEB_PUBLIC_URL` are set.
 - **`OMP_WEB_RO_MOUNTS`** must be granular `src:dst` (e.g. `…/opt/ida-pro-9.4:/opt/ida-pro-9.4`).
   Mounting whole `/opt` or `/home/omp` shadows the image's `/opt/ompweb` runner → host shows `omp-missing`.
+- **`OMP_WEB_VPN_IMAGE`** (optional): OpenVPN client image; set together with a stored account profile
+  and the user's space gains a VPN sidecar sharing the host container's network namespace. The image
+  must provide the OpenVPN client plus the kill-switch iptables rules its entrypoint installs.
 - **Member model access**: provisioning seeds `mcp.json`, `skills/`, `models.yml` and `config.yml`
   from the master into each space. Without `models.yml` a member's host has no provider and every
   send fails with `Model not found` even though the master can address the model.

@@ -23,7 +23,8 @@ import {
  * The route modules under app/api/admin/users keep to method exports only; the logic lives here.
  */
 
-const MAX_BODY_BYTES = 8 * 1024;
+// Realistic .ovpn files inline their certificates, so a profile alone can exceed a few KiB.
+const MAX_BODY_BYTES = 64 * 1024;
 
 /** undefined when the caller may manage accounts; otherwise the 401/403 to answer with. */
 export function adminGuard(request: Request): Response | undefined {
@@ -211,7 +212,13 @@ export async function deleteUser(request: Request, rawId: string): Promise<Respo
   }
   if (userSpaceConfig()) {
     revokeOwnedHosts(id);
-    await teardownUserSpace(existing.username).catch(() => undefined);
+    try {
+      await teardownUserSpace(existing.username);
+    } catch (error) {
+      // The account and its host grants are gone even though the space survived; say so instead of pretending success.
+      const reason = error instanceof Error ? error.message : String(error);
+      return Response.json({ error: `account deleted but its space could not be removed: ${reason}` }, { status: 502 });
+    }
   }
   return new Response(null, { status: 204 });
 }

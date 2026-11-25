@@ -63,7 +63,7 @@ export function userSpaceConfig(env: NodeJS.ProcessEnv = process.env): UserSpace
   const seedRaw = asString(env.OMP_WEB_SEED_DEFAULTS)?.trim().toLowerCase();
   const seedDefaults = seedRaw === "0" || seedRaw === "false" ? false : true;
   const roRaw = asString(env.OMP_WEB_RO_MOUNTS)?.trim();
-  const roMounts = roRaw ? roRaw.split(",").map((entry) => entry.trim()).filter((entry) => entry.startsWith("/") && !entry.endsWith(":")) : [];
+  const roMounts = roRaw ? roRaw.split(",").map((entry) => entry.trim()).filter((entry) => /^(\/[^:]+)(:(\/[^:]+))?$/.test(entry)) : [];
   return { image, masterUrl, ...(vpnImage ? { vpnImage } : {}), seedDefaults, ...(roMounts.length > 0 ? { roMounts } : {}) };
 }
 
@@ -76,7 +76,7 @@ export function spaceDirectory(username: string): string {
   return join(getAgentDir(), "omp-web", "spaces", username);
 }
 
-function writeSpaceFile(username: string, name: string, content: string): string {
+function writeSpaceFile(username: string, name: string, content: string | Buffer): string {
   const path = join(spaceDirectory(username), name);
   // Nested names (agent-seed/skills/...) need their parent directories too.
   mkdirSync(dirname(path), { recursive: true });
@@ -93,20 +93,20 @@ function writeSpaceFile(username: string, name: string, content: string): string
 /** The master's shipped agent defaults: its mcp.json, model providers (models.yml), agent config
  * (config.yml) and everything under skills/. Without models.yml a member's host knows no provider and
  * every send fails with "Model not found" even though the master can address the model. */
-function collectSeedFiles(agentDir: string): Record<string, string> {
-  const files: Record<string, string> = {};
+function collectSeedFiles(agentDir: string): Record<string, Buffer> {
+  const files: Record<string, Buffer> = {};
   const mcpPath = join(agentDir, "mcp.json");
-  if (existsSync(mcpPath)) files["mcp.json"] = readFileSync(mcpPath, "utf8");
+  if (existsSync(mcpPath)) files["mcp.json"] = readFileSync(mcpPath);
   const modelsPath = join(agentDir, "models.yml");
-  if (existsSync(modelsPath)) files["models.yml"] = readFileSync(modelsPath, "utf8");
+  if (existsSync(modelsPath)) files["models.yml"] = readFileSync(modelsPath);
   const configPath = join(agentDir, "config.yml");
-  if (existsSync(configPath)) files["config.yml"] = readFileSync(configPath, "utf8");
+  if (existsSync(configPath)) files["config.yml"] = readFileSync(configPath);
   const walk = (dir: string, prefix: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const abs = join(dir, entry.name);
       const rel = prefix.length > 0 ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(abs, rel);
-      else if (entry.isFile()) files[rel] = readFileSync(abs, "utf8");
+      else if (entry.isFile()) files[rel] = readFileSync(abs);
     }
   };
   const skillsDir = join(agentDir, "skills");
@@ -148,7 +148,7 @@ export function buildProvisionCommands(username: string, config: UserSpaceConfig
   const vpn = config.vpnImage !== undefined && vpnProfilePath !== undefined ? { image: config.vpnImage, profile: vpnProfilePath } : undefined;
   const commands: string[][] = [["volume", "create", hostVolumeName(username)]];
   if (vpn) {
-    commands.push(["run", "-d", "--name", vpnContainerName(username), "--restart", "unless-stopped", "--cap-add", "NET_ADMIN", "-v", `${vpn.profile}:/etc/openvpn/config.ovpn:ro`, vpn.image]);
+    commands.push(["run", "-d", "--name", vpnContainerName(username), "--restart", "unless-stopped", "--cap-add", "NET_ADMIN", "-v", `${vpn.profile}:/etc/openvpn/config.ovpn:ro`, "-e", "CONFIG_FILE=/etc/openvpn/config.ovpn", vpn.image]);
   }
   if (seedPath) {
     // Fill the volume with the master's defaults; `cp -rn` never overwrites files the user already has.
@@ -174,7 +174,7 @@ export function buildProvisionCommands(username: string, config: UserSpaceConfig
 /** The exact docker invocations a teardown performs; data removal lives in the volume. */
 export function buildTeardownCommands(username: string, withVpn = false): string[][] {
   return [
-    ["rm", "-f", "-v", hostContainerName(username)],
+    ["rm", "-f", hostContainerName(username)],
     ...(withVpn ? [["rm", "-f", vpnContainerName(username)]] : []),
     ["volume", "rm", hostVolumeName(username)],
   ];
@@ -201,17 +201,18 @@ export async function provisionUserSpace(
   run: DockerRunner = nodeDockerRunner,
 ): Promise<{ hostId: string }> {
   const { host, token } = createHost(user.username);
+  let staged: StagedSpace | undefined;
   try {
     updateHost(host.id, { ownerUserId: user.id });
-    const staged = stageUserSpace(user, config, token);
+    staged = stageUserSpace(user, config, token);
     await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath, staged.seedPath), run);
     return { hostId: host.id };
   } catch (error) {
     revokeHost(host.id);
-    // Containers the attempt already started must go too: a leftover would fail the
-    // retry's `docker run`. Missing containers are tolerated, as in teardown.
-    await run(["rm", "-f", "-v", hostContainerName(user.username)]).catch(() => undefined);
-    await run(["rm", "-f", vpnContainerName(user.username)]).catch(() => undefined);
+    // Everything the attempt created must go too — the exact teardown commands (missing
+    // containers and volume tolerated), including the volume the host run may have claimed.
+    // A leftover would fail the retry's `docker run`.
+    await runAll(buildTeardownCommands(user.username, Boolean(staged?.profilePath)), run).catch(() => undefined);
     // The staged artifacts belonged to the revoked registration: drop them so a retry stages fresh ones.
     rmSync(join(spaceDirectory(user.username), "host-token"), { force: true });
     rmSync(join(spaceDirectory(user.username), "config.ovpn"), { force: true });
@@ -234,6 +235,11 @@ export async function reprovisionUserSpace(
   if (!existsSync(tokenPath)) throw new Error(`${user.username} has no provisioned space to rebuild`);
   const token = readFileSync(tokenPath, "utf8").trim();
   const hadVpn = hasStagedVpn(user.username);
+  // Rollback snapshots (the token is unchanged): stageUserSpace overwrites config.ovpn and
+  // replaces agent-seed wholesale, so capture the previous artifacts before staging clobbers them.
+  const previousProfilePath = hadVpn ? join(spaceDirectory(user.username), "config.ovpn") : undefined;
+  const previousProfile = previousProfilePath === undefined ? undefined : readFileSync(previousProfilePath);
+  const previousSeedPath = existsSync(join(spaceDirectory(user.username), "agent-seed")) ? join(spaceDirectory(user.username), "agent-seed") : undefined;
   const staged = stageUserSpace(user, config, token);
   const willHaveVpn = Boolean(staged.profilePath);
   // Remove both old containers whenever either exists: the host container may still be attached to
@@ -241,7 +247,15 @@ export async function reprovisionUserSpace(
   // Missing containers are tolerated, exactly as teardown removes both unconditionally.
   await run(["rm", "-f", "-v", hostContainerName(user.username)]).catch(() => undefined);
   if (hadVpn || willHaveVpn) await run(["rm", "-f", vpnContainerName(user.username)]).catch(() => undefined);
-  await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath, staged.seedPath), run);
+  try {
+    await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath, staged.seedPath), run);
+  } catch (error) {
+    // A failed rebuild must not strand the account: restore the previous profile bytes and
+    // best-effort re-provision the previous artifact set, then report both outcomes.
+    if (previousProfile !== undefined && previousProfilePath !== undefined) writeSpaceFile(user.username, "config.ovpn", previousProfile);
+    const rebuilt = await runAll(buildProvisionCommands(user.username, config, token, previousProfilePath, previousSeedPath), run).then(() => true, () => false);
+    throw new Error(`${error instanceof Error ? error.message : String(error)}${rebuilt ? "; rebuilt the previous space state" : "; could not rebuild the previous space state"}`);
+  }
 }
 
 /** Stops the user's containers (ban); missing containers are tolerated. */

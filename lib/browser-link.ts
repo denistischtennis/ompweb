@@ -16,7 +16,7 @@ import { UPLOAD_ID_RE } from "./upload-limits";
 import { abortUpload, forwardUploadFrame, releaseUploadSink, startUpload, type UploadSink } from "./uploads";
 import { requestOwner } from "./web-auth";
 import { scopeFromOwner } from "./users/access";
-import { getUserStore } from "./users/store";
+import { getUserStore, type UserAccount } from "./users/store";
 
 // The browser link (docs/specs/2026-11-01-browser-link-design.md): one WebSocket per browser at /api/events/link,
 // carrying every subscription and agent command with the host link's delivery (lib/hosts/link-protocol.ts): sequenced
@@ -38,6 +38,8 @@ const MAX_SESSION_ID_LENGTH = 512;
 const MAX_RID_LENGTH = 64;
 const CLOSE = { invalidData: 1007, policy: 1008, tooBig: 1009, failed: 1011, replaced: 4409, gone: 4410, versionMismatch: 4426 } as const;
 const INVALID_REQUEST = { error: "Invalid event stream request", code: "invalid_event_stream_request" };
+/** What the gate (proxy.ts) answers for a request whose account no longer authenticates; a banned account's live link gets it for every command. */
+const AUTH_REQUIRED = { error: "Password required", code: "password_required" };
 
 /** The unacked window follows the link: about WINDOW_TARGET_MS of what the browser acks, between WINDOW_MIN_BYTES and
  * LINK_LIMITS.unackedBytes (see `measure`). A command's reply queued behind a backlog waits behind about that much on
@@ -224,7 +226,7 @@ function createLink(owner: string): BrowserLink {
   };
   links().set(link.token, link);
   // Its hello is the link's first line (seq 1).
-  link.connection = new EventStreamConnection(undefined, linkSink(link), scopeFromOwner(owner));
+  link.connection = new EventStreamConnection(undefined, linkSink(link), scopeFromOwner(owner), undefined, owner);
   return link;
 }
 
@@ -583,6 +585,12 @@ function onUploadStart(link: BrowserLink, ws: BrowserSocket, message: Record<str
   });
 }
 
+/** The account an owner string (lib/web-auth.ts requestOwner) names, or undefined for a legacy, trusted or open caller. */
+function accountForOwner(owner: string): UserAccount | undefined {
+  const userId = /^user:(\d+)$/.exec(owner)?.[1];
+  return userId === undefined ? undefined : getUserStore().findUserById(Number(userId));
+}
+
 function onCommand(link: BrowserLink, ws: BrowserSocket, message: Record<string, unknown>, lineBytes: number): void {
   const { rid, session } = message;
   if (typeof rid !== "string" || !rid || rid.length > MAX_RID_LENGTH) return ws.close(CLOSE.invalidData, "Invalid rid");
@@ -593,6 +601,13 @@ function onCommand(link: BrowserLink, ws: BrowserSocket, message: Record<string,
   const reply = ({ status, body }: Reply, deduped: boolean) => {
     queue(link, key, `{"type":"reply","rid":${JSON.stringify(rid)},"status":${status},"recvAt":${recvAt},"at":${Date.now()},"deduped":${deduped},"data":${JSON.stringify(body)}}`);
   };
+  // A ban revokes the account's issued sessions (lib/web-auth.ts), yet a socket authenticated before it stays open:
+  // every command re-reads the account, answers the gate's 401 and ends the link instead of running for a dead account.
+  const account = accountForOwner(link.owner);
+  if (account !== undefined && account.status !== "active") {
+    reply({ status: 401, body: AUTH_REQUIRED }, false);
+    return dispose(link, CLOSE.policy);
+  }
   // A bad session fails only this command: the link carries other sessions' commands.
   if (typeof session !== "string" || !session || session.length > MAX_SESSION_ID_LENGTH) return reply({ status: 400, body: INVALID_REQUEST }, false);
   // The HTTP twin gates every command with guardSession; on the link the account comes from the socket's owner,

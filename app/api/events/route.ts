@@ -2,6 +2,7 @@ import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-fo
 import { EventStreamConnection, getEventStreamConnection, parseHeartbeatSeconds } from "@/lib/event-stream-hub";
 import { parseEventStreamRequest, UNKNOWN_CONNECTION_CODE } from "@/lib/event-stream-protocol";
 import { viewerScope } from "@/lib/users/access";
+import { requestOwner } from "@/lib/web-auth";
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -13,7 +14,7 @@ export function GET(req: Request, { disableIdleTimeout }: { disableIdleTimeout: 
   // outside 15..110 fall back to the 30 s default rather than being clamped.
   const heartbeat = parseHeartbeatSeconds(new URL(req.url).searchParams.get("heartbeat"));
   // The connection carries the requester's visibility scope: members subscribe to and receive only their own sessions.
-  const connection = new EventStreamConnection(req.signal, { heartbeatMs: heartbeat * 1000 }, viewerScope(req));
+  const connection = new EventStreamConnection(req.signal, { heartbeatMs: heartbeat * 1000 }, viewerScope(req), req);
   return new Response(connection.stream, {
     headers: {
       "Content-Type": "text/event-stream",
@@ -39,6 +40,11 @@ export async function POST(req: Request) {
   }
   const connection = getEventStreamConnection(request.connectionId);
   if (!connection) {
+    return Response.json({ error: "Unknown event stream connection", code: UNKNOWN_CONNECTION_CODE }, { status: 404 });
+  }
+  // A member's connection belongs to their account alone; another account's POST cannot attach to it and answers like
+  // a missing one. Legacy/unscoped connections keep serving every authenticated caller, so existing tabs survive.
+  if (connection.owner !== undefined && connection.owner.startsWith("user:") && connection.owner !== requestOwner(req)) {
     return Response.json({ error: "Unknown event stream connection", code: UNKNOWN_CONNECTION_CODE }, { status: 404 });
   }
   if ("unsubscribe" in request) {

@@ -37,7 +37,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 
 # The ompweb package once, globally — never again per user.
 COPY --from=pkg /out/*.tgz /tmp/ompweb.tgz
-RUN npm install -g --no-audit --no-fund /tmp/ompweb.tgz && rm -f /tmp/ompweb.tgz
+RUN npm install -g --allow-scripts=bun --no-audit --no-fund /tmp/ompweb.tgz && rm -f /tmp/ompweb.tgz
 
 # The ompweb-omp binary pinned by omp-runner.json, downloaded once with its SHA-256 check
 # (fetch-omp), and exposed at a stable path so user volumes never re-download it.

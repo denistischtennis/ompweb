@@ -251,7 +251,17 @@ export class UserStore {
     const user = this.findUserById(id);
     if (!user) throw new UserInputError(`no user ${id}`);
     if (user.role === "admin" && this.activeAdminCount(id) === 0) throw new LastAdminError("this is the last active admin");
-    this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
+    // The account's ownership rows go with it: dangling rows would hide resources nobody owns.
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM session_owners WHERE user_id = ?").run(id);
+      this.db.prepare("DELETE FROM project_owners WHERE user_id = ?").run(id);
+      this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch { /* already ended */ }
+      throw error;
+    }
   }
 
   /** The account whose password matches, or null. Banned users cannot sign in; unknown and banned
@@ -276,9 +286,11 @@ export class UserStore {
     return asNumber(rowFrom(this.db.prepare(`SELECT user_id FROM ${table} WHERE ${column} = ?`).get(key))?.user_id) ?? userId;
   }
 
-  /** Records (or moves) the owner of a session. The user must exist. */
-  setSessionOwner(sessionId: string, userId: number): void {
-    this.setOwner("session_owners", "session_id", sessionId.trim(), userId, true);
+  /** Records the owner of a session. The user must exist.
+   * Without `force` an existing row is never overwritten — ownership cannot be stolen — and the current
+   * owner id is returned either way; `force: true` replaces it (admins may reassign). */
+  setSessionOwner(sessionId: string, userId: number, options?: { force?: boolean }): number {
+    return this.setOwner("session_owners", "session_id", sessionId.trim(), userId, options?.force === true);
   }
 
   sessionOwner(sessionId: string): number | null {
