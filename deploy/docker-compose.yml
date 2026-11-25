@@ -31,7 +31,14 @@ services:
       # Shared tool binaries + gh login mounted into every user space. Granular src:dst
       OMP_WEB_RO_MOUNTS: /root/projects/ompweb-tools/opt/ida-pro-9.4:/opt/ida-pro-9.4,/root/projects/ompweb-tools/root/.local:/home/omp/.local,/root/projects/ompweb-tools/root/.cache:/home/omp/.cache,/root/projects/ompweb-tools/root/.omp/puppeteer:/home/omp/.omp/puppeteer,/root/ompweb-1338/gh-hosts.yml:/home/omp/.config/gh/hosts.yml
     volumes:
-      - /root/.omp:/root/.omp # live agent dir: provider auth, sessions, skills (seeded into new spaces)
+      - masteragent:/root/.omp # dedicated server agent home (docker volume), NOT the host CLI /root/.omp
       - /root/projects:/root/projects # mirrored path so session cwds stay valid
       - /var/run/docker.sock:/var/run/docker.sock # docker-in-docker via host daemon socket
       - ./gh-hosts.yml:/root/.config/gh/hosts.yml:ro # gh login for the private tools repo
+
+volumes:
+  # The master's own agent dir (providers, accounts, host registry, shared skills) lives here so the
+  # server is self-contained and its content is what gets seeded into member spaces. Seed on first setup:
+  #   docker run --rm -v <proj>_masteragent:/dst -v /root/.omp:/src:ro alpine \
+  #     sh -c 'mkdir -p /dst/agent && cp -a /src/agent/{config.yml,models.yml,models.db,omp-web,skills} /dst/agent/'
+  masteragent: {}

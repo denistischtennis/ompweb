@@ -23,6 +23,10 @@ printf 'github.com:\n    oauth_token: <gh-token>\n' > gh-hosts.yml
 chown 10000:10000 gh-hosts.yml && chmod 600 gh-hosts.yml   # readable by root AND the omp user in spaces
 docker build -f Dockerfile.host   -t local/ompweb-host:0.7.4-mt.1 ..     # provisioning references this tag
 ufw allow 1338/tcp                                                            # container→host-port needs an explicit rule
+# Seed the master's OWN agent home (docker volume) with its server essentials — providers, accounts,
+# host registry, shared skills — so it is self-contained and NOT your personal CLI /root/.omp:
+docker volume create ompweb-1338_masteragent && docker run --rm -v ompweb-1338_masteragent:/dst -v /root/.omp:/src:ro alpine \
+  sh -c 'mkdir -p /dst/agent && cp -a /src/agent/{config.yml,models.yml,models.db,omp-web,skills} /dst/agent/'
 docker compose up -d                                                          # builds the master image and starts it
 ```
 LAN URL: `http://192.168.1.247:1338` (update `OMP_WEB_PUBLIC_URL` if the host IP changes).
