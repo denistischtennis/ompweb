@@ -11,22 +11,25 @@ single-user stack still runs separately on :1337 from `/root/ompweb-docker`.
 | `Dockerfile.host` | per-user `ompweb host` image (one image, shared by every member space) | yes |
 | `entrypoint-host.sh` | host container entrypoint (logs into master; passes `--allow-http` for http URLs) | yes |
 | `docker-compose.yml` | the :1338 service definition (ports, env, DinD socket mount, tool roMounts) | yes |
+| `seed-agent.sh` | applies the shared agent bundle (mcp.json + skills) from **ompweb-tools** to an agent dir/volume | yes |
 | `.env.example` → `.env` | `OMP_WEB_PASSWORD_HASH` (the actual `.env` holds your hash) | example only |
 | `gh-hosts.yml` | gh login (`oauth_token`) mounted into master + every user space | **no** (secret) |
 
 ## Fresh-machine setup (as root)
 ```bash
-git clone https://github.com/denistischtennis/ompweb /root/projects/ompweb
+git clone https://github.com/denistischtennis/ompweb       /root/projects/ompweb
+git clone https://github.com/denistischtennis/ompweb-tools /root/projects/ompweb-tools   # shared tools + agent bundle
 cd /root/projects/ompweb/deploy
 cp .env.example .env                       # or set OMP_WEB_PASSWORD_HASH via ompweb hash-password
 printf 'github.com:\n    oauth_token: <gh-token>\n' > gh-hosts.yml
 chown 10000:10000 gh-hosts.yml && chmod 600 gh-hosts.yml   # readable by root AND the omp user in spaces
 docker build -f Dockerfile.host   -t local/ompweb-host:0.7.4-mt.1 ..     # provisioning references this tag
 ufw allow 1338/tcp                                                            # container→host-port needs an explicit rule
-# Seed the master's OWN agent home (docker volume) with its server essentials — providers, accounts,
-# host registry, shared skills — so it is self-contained and NOT your personal CLI /root/.omp:
-docker volume create ompweb-1338_masteragent && docker run --rm -v ompweb-1338_masteragent:/dst -v /root/.omp:/src:ro alpine \
-  sh -c 'mkdir -p /dst/agent && cp -a /src/agent/{config.yml,models.yml,models.db,omp-web,skills} /dst/agent/'
+# Master agent-home volume = provider config (your LLM wiring) + the shared bundle from ompweb-tools.
+docker volume create ompweb-1338_masteragent
+#   place your config.yml / models.yml in the volume, then apply mcp.json + skills from ompweb-tools:
+docker run --rm -v ompweb-1338_masteragent:/agent -v /root/projects/ompweb:/repo:ro -v /root/projects/ompweb-tools:/tools:ro \
+  alpine sh -c 'TOOLS=/tools exec /repo/deploy/seed-agent.sh /agent'
 docker compose up -d                                                          # builds the master image and starts it
 ```
 LAN URL: `http://192.168.1.247:1338` (update `OMP_WEB_PUBLIC_URL` if the host IP changes).
