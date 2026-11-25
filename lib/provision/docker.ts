@@ -50,7 +50,7 @@ export interface UserSpaceConfig {
   vpnImage?: string;
   /** Ship the master's skills and mcp.json to new spaces; on unless explicitly disabled. */
   seedDefaults?: boolean;
-  /** Host paths bind-mounted read-only at the same path into every user container (shared tool binaries: MCP executables, browser caches). */
+  /** Host paths bind-mounted read-only into every user container; `src` mounts at the identical path, `src:dst` at `dst` (shared tool binaries: MCP executables, browser caches). */
   roMounts?: string[];
 }
 
@@ -63,7 +63,7 @@ export function userSpaceConfig(env: NodeJS.ProcessEnv = process.env): UserSpace
   const seedRaw = asString(env.OMP_WEB_SEED_DEFAULTS)?.trim().toLowerCase();
   const seedDefaults = seedRaw === "0" || seedRaw === "false" ? false : true;
   const roRaw = asString(env.OMP_WEB_RO_MOUNTS)?.trim();
-  const roMounts = roRaw ? roRaw.split(",").map((entry) => entry.trim()).filter((entry) => entry.startsWith("/")) : [];
+  const roMounts = roRaw ? roRaw.split(",").map((entry) => entry.trim()).filter((entry) => entry.startsWith("/") && !entry.endsWith(":")) : [];
   return { image, masterUrl, ...(vpnImage ? { vpnImage } : {}), seedDefaults, ...(roMounts.length > 0 ? { roMounts } : {}) };
 }
 
@@ -150,7 +150,10 @@ export function buildProvisionCommands(username: string, config: UserSpaceConfig
   }
   const hostRun = ["run", "-d", "--name", hostContainerName(username), "--restart", "unless-stopped"];
   if (vpn) hostRun.push("--network", `container:${vpnContainerName(username)}`);
-  for (const mount of config.roMounts ?? []) hostRun.push("-v", `${mount}:${mount}:ro`);
+  for (const mount of config.roMounts ?? []) {
+    const [src, dst] = mount.split(":");
+    hostRun.push("-v", `${src}:${dst ?? src}:ro`);
+  }
   hostRun.push("-v", `${hostVolumeName(username)}:/home/omp/.omp/agent`, "-e", `OMP_WEB_HOST_URL=${config.masterUrl}`, `-e`, `OMP_WEB_HOST_TOKEN=${hostToken}`, config.image);
   commands.push(hostRun);
   return commands;
