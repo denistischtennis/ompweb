@@ -39,10 +39,14 @@ export function canSeeSession(request: Request | undefined, sessionId: string): 
   return !scope.scoped || getUserStore().sessionOwner(sessionId) === scope.userId;
 }
 
-/** True iff `request` may see the project keyed by `projectKeyFor`'s identity. Unowned rows are invisible to members. */
-export function canSeeProject(request: Request | undefined, projectKey: string): boolean {
-  const scope = viewerScope(request);
+/** True iff a viewer scope may see the project keyed by `projectKeyFor`'s identity. Unowned rows are invisible to members. */
+export function projectVisibleToScope(scope: ViewerScope, projectKey: string): boolean {
   return !scope.scoped || getUserStore().projectOwner(projectKey) === scope.userId;
+}
+
+/** True iff `request` may see the project keyed by `projectKeyFor`'s identity. */
+export function canSeeProject(request: Request | undefined, projectKey: string): boolean {
+  return projectVisibleToScope(viewerScope(request), projectKey);
 }
 
 /** True iff a viewer scope may address a host whose registry record carries `ownerUserId`. Hosts without an owner are invisible to members. */

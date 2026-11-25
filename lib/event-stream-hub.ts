@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { filePathApiSegments } from "./file-paths";
 import { hostsSnapshot, onHostsChange, onWorkspaceFile } from "./hosts/hub";
+import { LOCAL_HOST_ID } from "./hosts/registry";
 import { resolveWorkspaceHost } from "./api-utils";
 import { isLinkUp } from "./hosts/host";
 import { HostOpError } from "./hosts/link-protocol";
@@ -19,7 +20,8 @@ import {
 import { browserTransportState } from "./web-settings";
 import { isDeltaUpdate, mergeDeltaUpdates } from "./message-delta";
 import { isRecord } from "./type-guards";
-import { hostVisibleToScope, type ViewerScope } from "./users/access";
+import { hostVisibleToScope, projectKeyFor, projectVisibleToScope, type ViewerScope } from "./users/access";
+import { poolManagedProject, type HostPool, type PoolProject } from "./hosts/pools";
 import { requestOwner } from "./web-auth";
 import { getUserStore } from "./users/store";
 
@@ -216,11 +218,21 @@ function scopeRunningPayload(data: unknown, userId: number): unknown {
   return data;
 }
 
-/** A scoped member's `hosts`-channel payload: only the hosts their account owns (plus nothing else).
- * Mirrors GET /api/hosts's `canSeeHost` filter, applied per connection at send time, never to the shared snapshot. */
+/** A scoped member's `hosts`-channel payload: only the hosts their account owns and the pool projects it can see.
+ * Mirrors GET /api/hosts's filters (hosts by canSeeHost, pool projects by canSeeProject), applied per connection
+ * at send time, never to the shared snapshot. */
 function scopeHostsPayload(data: unknown, scope: ViewerScope): unknown {
   if (!isRecord(data) || !Array.isArray(data.hosts)) return data;
-  return { ...data, hosts: data.hosts.filter((row) => isRecord(row) && typeof row.id === "string" && hostVisibleToScope(scope, row.id)) };
+  const hosts = data.hosts.filter((row) => isRecord(row) && typeof row.id === "string" && hostVisibleToScope(scope, row.id));
+  // Pools name every project on the installation: a member keeps the pools' structure but only the projects their account owns.
+  const pools = !Array.isArray(data.pools)
+    ? data.pools
+    : data.pools.map((pool) =>
+        isRecord(pool) && Array.isArray(pool.projects)
+          ? { ...pool, projects: pool.projects.filter((project) => isRecord(project) && projectVisibleToScope(scope, projectKeyFor(poolManagedProject(pool as unknown as HostPool, project as unknown as PoolProject)))) }
+          : pool,
+      );
+  return { ...data, hosts, ...(Array.isArray(data.pools) ? { pools } : {}) };
 }
 
 export class EventStreamConnection {
@@ -610,7 +622,7 @@ async function openChannel(channel: EventStreamChannel, handle: SubscriptionHand
     case "session":
       return openSessionChannel(channel.sessionId, handle);
     case "file":
-      return openFileChannel(channel.path, channel.sessionId, channel.hostId, handle, connection.request);
+      return openFileChannel(channel.path, channel.sessionId, channel.hostId, handle, connection);
     case "host-tools":
       return openHostToolsChannel(handle, connection);
     case "hosts":
@@ -742,11 +754,21 @@ function openSessionChannel(sessionId: string, handle: SubscriptionHandle): Subs
 }
 
 // Change notifications for one file open in the viewer.
-async function openFileChannel(rawPath: string, sessionId: string | null, hostId: string | undefined, handle: SubscriptionHandle, request?: Request): Promise<SubscribeResult> {
-  const resolved = await resolveWorkspaceHost(hostId, sessionId, { request });
+async function openFileChannel(rawPath: string, sessionId: string | null, hostId: string | undefined, handle: SubscriptionHandle, connection: EventStreamConnection): Promise<SubscribeResult> {
+  // A browser-link connection carries its owner string, not a Request, so resolveWorkspaceHost cannot scope it.
+  // Apply the HTTP path's host rule up front (invisible hosts answer like unknown ones, never with their offline state).
+  const hiddenHost = (): SubscribeResult => ({ ok: false, status: 404, error: "Host not found", code: "host_not_found" });
+  if (connection.request === undefined && connection.scope.scoped && !hostVisibleToScope(connection.scope, hostId ?? LOCAL_HOST_ID)) {
+    return hiddenHost();
+  }
+  const resolved = await resolveWorkspaceHost(hostId, sessionId, { request: connection.request });
   if ("response" in resolved) {
     const body = await resolved.response.json();
     return { ok: false, status: resolved.response.status, error: body.error, code: body.code };
+  }
+  // A session channel names its host through the session; the same rule covers that derived host too.
+  if (connection.request === undefined && connection.scope.scoped && !hostVisibleToScope(connection.scope, resolved.host.id)) {
+    return hiddenHost();
   }
   const { host } = resolved;
   const id = randomUUID(), epoch = randomUUID();

@@ -277,7 +277,14 @@ export async function startUserSpace(username: string, run: DockerRunner = nodeD
 
 /** Removes container(s) and volume; used on account deletion after the row itself is gone. */
 export async function teardownUserSpace(username: string, run: DockerRunner = nodeDockerRunner): Promise<void> {
-  await runAll(buildTeardownCommands(username, hasStagedVpn(username)), run);
+  // "No such container/volume" means the object is already gone — the desired end state, not a failure:
+  // an account that never got a space, or one torn down twice, deletes cleanly. Every other failure is real.
+  for (const args of buildTeardownCommands(username, hasStagedVpn(username))) {
+    await run(args).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/no such (?:container|volume|object|network)/i.test(message)) throw error;
+    });
+  }
 }
 
 /** Revokes every host record owned by `userId`; returns the revoked ids. */
