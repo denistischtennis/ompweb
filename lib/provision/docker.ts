@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createHost, readHosts, revokeHost, updateHost } from "../hosts/registry";
 import { getAgentDir } from "../omp/paths";
 import { asString } from "../type-guards";
@@ -12,8 +12,8 @@ import type { UserAccount } from "../users/store";
  * One `deploy/Dockerfile.host` image serves every user: the app and the pinned
  * ompweb-omp binary live in the image, and each user's whole mutable state is a
  * named volume mounted at /home/omp/.omp/agent. Updating means rebuilding/pulling
- * one image and recreating the containers - nothing is updated per user.
- *
+ * one image and recreating the containers - nothing is updated per user. New spaces
+ * are seeded from the master's own skills and mcp.json (`cp -rn`: user edits always win).
  * Provisioning is active only when both OMP_WEB_HOST_IMAGE and OMP_WEB_PUBLIC_URL
  * are configured; without them accounts exist but no container is started, which
  * keeps single-host installs and the test suite untouched.
@@ -48,6 +48,8 @@ export interface UserSpaceConfig {
   masterUrl: string;
   /** OpenVPN client image; set together with a stored profile to route the space through a VPN sidecar. */
   vpnImage?: string;
+  /** Ship the master's skills and mcp.json to new spaces; on unless explicitly disabled. */
+  seedDefaults?: boolean;
 }
 
 /** The provisioning settings, or null when provisioning is not configured. Pure: never touches docker. */
@@ -56,7 +58,9 @@ export function userSpaceConfig(env: NodeJS.ProcessEnv = process.env): UserSpace
   const masterUrl = asString(env.OMP_WEB_PUBLIC_URL)?.trim();
   if (!image || !masterUrl) return null;
   const vpnImage = asString(env.OMP_WEB_VPN_IMAGE)?.trim();
-  return vpnImage ? { image, masterUrl, vpnImage } : { image, masterUrl };
+  const seedRaw = asString(env.OMP_WEB_SEED_DEFAULTS)?.trim().toLowerCase();
+  const seedDefaults = seedRaw === "0" || seedRaw === "false" ? false : true;
+  return { image, masterUrl, ...(vpnImage ? { vpnImage } : {}), seedDefaults };
 }
 
 export const hostContainerName = (username: string) => `ompweb-host-${username}`;
@@ -69,9 +73,9 @@ export function spaceDirectory(username: string): string {
 }
 
 function writeSpaceFile(username: string, name: string, content: string): string {
-  const dir = spaceDirectory(username);
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, name);
+  const path = join(spaceDirectory(username), name);
+  // Nested names (agent-seed/skills/...) need their parent directories too.
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content, { mode: 0o600 });
   // writeFileSync applies the mode only to newly created files; enforce it on rewrites too.
   try {
@@ -82,27 +86,63 @@ function writeSpaceFile(username: string, name: string, content: string): string
   return path;
 }
 
+/** The master's shipped agent defaults: its mcp.json and everything under skills/. */
+function collectSeedFiles(agentDir: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  const mcpPath = join(agentDir, "mcp.json");
+  if (existsSync(mcpPath)) files["mcp.json"] = readFileSync(mcpPath, "utf8");
+  const walk = (dir: string, prefix: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      const rel = prefix.length > 0 ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(abs, rel);
+      else if (entry.isFile()) files[rel] = readFileSync(abs, "utf8");
+    }
+  };
+  const skillsDir = join(agentDir, "skills");
+  if (existsSync(skillsDir)) walk(skillsDir, "skills");
+  return files;
+}
+
+/** Refresh the staging copy of the master's defaults; undefined when seeding is off or nothing exists to seed. */
+function stageSeed(username: string, config: UserSpaceConfig): string | undefined {
+  if (config.seedDefaults === false) return undefined;
+  const files = collectSeedFiles(getAgentDir());
+  if (Object.keys(files).length === 0) return undefined;
+  const seedDir = join(spaceDirectory(username), "agent-seed");
+  rmSync(seedDir, { recursive: true, force: true });
+  for (const [rel, content] of Object.entries(files)) writeSpaceFile(username, join("agent-seed", rel), content);
+  return seedDir;
+}
+
 export interface StagedSpace {
   tokenPath: string;
   /** The staged .ovpn path, present when the user has a profile and a VPN image is configured. */
   profilePath?: string;
+  /** The staged copy of the master's default agent files, present when seeding produced any. */
+  seedPath?: string;
 }
 
-/** Write the account's current artifacts (token, optional VPN profile) and return their paths. */
+/** Write the account's current artifacts (token, optional VPN profile, optional default skills/mcp.json) and return their paths. */
 export function stageUserSpace(user: Pick<UserAccount, "username" | "vpnProfile">, config: UserSpaceConfig, hostToken: string): StagedSpace {
   const tokenPath = writeSpaceFile(user.username, "host-token", hostToken);
+  const seedPath = stageSeed(user.username, config);
   if (config.vpnImage && user.vpnProfile) {
-    return { tokenPath, profilePath: writeSpaceFile(user.username, "config.ovpn", user.vpnProfile) };
+    return { tokenPath, profilePath: writeSpaceFile(user.username, "config.ovpn", user.vpnProfile), seedPath };
   }
-  return { tokenPath };
+  return { tokenPath, seedPath };
 }
 
 /** The exact docker invocations a provision performs, derived purely from the inputs. */
-export function buildProvisionCommands(username: string, config: UserSpaceConfig, hostToken: string, vpnProfilePath?: string): string[][] {
+export function buildProvisionCommands(username: string, config: UserSpaceConfig, hostToken: string, vpnProfilePath?: string, seedPath?: string): string[][] {
   const vpn = config.vpnImage !== undefined && vpnProfilePath !== undefined ? { image: config.vpnImage, profile: vpnProfilePath } : undefined;
   const commands: string[][] = [["volume", "create", hostVolumeName(username)]];
   if (vpn) {
     commands.push(["run", "-d", "--name", vpnContainerName(username), "--restart", "unless-stopped", "--cap-add", "NET_ADMIN", "-v", `${vpn.profile}:/etc/openvpn/config.ovpn:ro`, vpn.image]);
+  }
+  if (seedPath) {
+    // Fill the volume with the master's defaults; `cp -rn` never overwrites files the user already has.
+    commands.push(["run", "--rm", "-v", `${seedPath}:/seed:ro`, "-v", `${hostVolumeName(username)}:/home/omp/.omp/agent`, config.image, "sh", "-c", "cp -rn /seed/. /home/omp/.omp/agent/ && chown -R omp:omp /home/omp/.omp/agent"]);
   }
   const hostRun = ["run", "-d", "--name", hostContainerName(username), "--restart", "unless-stopped"];
   if (vpn) hostRun.push("--network", `container:${vpnContainerName(username)}`);
@@ -144,7 +184,7 @@ export async function provisionUserSpace(
   try {
     updateHost(host.id, { ownerUserId: user.id });
     const staged = stageUserSpace(user, config, token);
-    await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath), run);
+    await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath, staged.seedPath), run);
     return { hostId: host.id };
   } catch (error) {
     revokeHost(host.id);
@@ -155,6 +195,7 @@ export async function provisionUserSpace(
     // The staged artifacts belonged to the revoked registration: drop them so a retry stages fresh ones.
     rmSync(join(spaceDirectory(user.username), "host-token"), { force: true });
     rmSync(join(spaceDirectory(user.username), "config.ovpn"), { force: true });
+    rmSync(join(spaceDirectory(user.username), "agent-seed"), { recursive: true, force: true });
     throw error;
   }
 }
@@ -180,7 +221,7 @@ export async function reprovisionUserSpace(
   // Missing containers are tolerated, exactly as teardown removes both unconditionally.
   await run(["rm", "-f", "-v", hostContainerName(user.username)]).catch(() => undefined);
   if (hadVpn || willHaveVpn) await run(["rm", "-f", vpnContainerName(user.username)]).catch(() => undefined);
-  await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath), run);
+  await runAll(buildProvisionCommands(user.username, config, token, staged.profilePath, staged.seedPath), run);
 }
 
 /** Stops the user's containers (ban); missing containers are tolerated. */
