@@ -1,0 +1,37 @@
+# ompweb multiuser fork (denistischtennis/ompweb @ main) built from source.
+# Runs beside the older single-user stack on :1337; this instance serves :1338.
+# DinD: the master provisions per-user host containers through the host daemon
+# (socket mount) and needs the host image tag (deploy/Dockerfile.host) present.
+#
+# Instant setup on a fresh machine (as root):
+#   git clone https://github.com/denistischtennis/ompweb /root/projects/ompweb
+#   cd /root/projects/ompweb/deploy
+#   cp .env.example .env                                   # set OMP_WEB_PASSWORD_HASH (ompweb hash-password)
+#   printf 'github.com:\n    oauth_token: <gh-token>\n' > gh-hosts.yml && chown 10000:10000 gh-hosts.yml && chmod 600 gh-hosts.yml
+#   docker build -f Dockerfile.host -t local/ompweb-host:0.7.4-mt.1 ..      # the host image provisioning references
+#   ufw allow 1338/tcp                                                       # container→host-port needs an explicit rule
+#   docker compose up -d                                                     # builds the master image and starts it
+#
+# LAN URL is http://192.168.1.247:1338 (adjust OMP_WEB_PUBLIC_URL if the host IP changes).
+services:
+  ompweb:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.master
+    image: local/ompweb-master:0.7.4-mt.1
+    restart: unless-stopped
+    user: root # /root/* is root-only (ACL); matches the 1337 stack
+    ports:
+      - "1338:30177" # LAN: http://192.168.1.247:1338 (password-protected)
+    environment:
+      OMP_WEB_PASSWORD_HASH: ${OMP_WEB_PASSWORD_HASH}
+      # Provisioning (lib/provision/docker.ts): active only with both settings below.
+      OMP_WEB_HOST_IMAGE: local/ompweb-host:0.7.4-mt.1
+      OMP_WEB_PUBLIC_URL: http://192.168.1.247:1338
+      # Shared tool binaries + gh login mounted into every user space. Granular src:dst
+      OMP_WEB_RO_MOUNTS: /root/projects/ompweb-tools/opt/ida-pro-9.4:/opt/ida-pro-9.4,/root/projects/ompweb-tools/root/.local:/home/omp/.local,/root/projects/ompweb-tools/root/.cache:/home/omp/.cache,/root/projects/ompweb-tools/root/.omp/puppeteer:/home/omp/.omp/puppeteer,/root/ompweb-1338/gh-hosts.yml:/home/omp/.config/gh/hosts.yml
+    volumes:
+      - /root/.omp:/root/.omp # live agent dir: provider auth, sessions, skills (seeded into new spaces)
+      - /root/projects:/root/projects # mirrored path so session cwds stay valid
+      - /var/run/docker.sock:/var/run/docker.sock # docker-in-docker via host daemon socket
+      - ./gh-hosts.yml:/root/.config/gh/hosts.yml:ro # gh login for the private tools repo
