@@ -7,6 +7,7 @@ import {
   LastAdminError,
   UserInputError,
   UsernameTakenError,
+  UserStore,
   getUserStore,
   isRole,
   isStatus,
@@ -147,10 +148,11 @@ export async function patchUser(request: Request, rawId: string): Promise<Respon
   }
   let vpnProfile: string | null | undefined;
   if (body.vpnProfile !== undefined) {
-    if (typeof body.vpnProfile !== "string" && body.vpnProfile !== null) {
-      return Response.json({ error: "vpnProfile must be a string or null" }, { status: 400 });
+    try {
+      vpnProfile = UserStore.normalizeVpnProfile(body.vpnProfile);
+    } catch (error) {
+      return storeFailure(error);
     }
-    vpnProfile = body.vpnProfile;
   }
   try {
     let user = existing;

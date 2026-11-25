@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "../omp/paths";
-import { hashPassword, isPasswordHash, PASSWORD_HASH_MIN_LOG_N, verifyPassword, type PasswordHashOptions } from "../web-password-hash";
+import { hashPassword, isPasswordHash, PASSWORD_HASH_LOG_N, verifyPassword, type PasswordHashOptions } from "../web-password-hash";
 import { asNumber, asString, isRecord } from "../type-guards";
 
 /**
@@ -226,21 +226,23 @@ export class UserStore {
     return this.findUserById(id)!;
   }
 
+  /** Normalize and validate an OpenVPN client config (trim; empty or null clears it; otherwise it needs `client` and `remote <host>` lines). Throws UserInputError. */
+  static normalizeVpnProfile(value: unknown): string | null {
+    if (value === null) return null;
+    if (typeof value !== "string") throw new UserInputError("vpnProfile must be a string or null");
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return null;
+    if (!/^\s*client\b/m.test(trimmed) || !/^\s*remote\s+\S+/m.test(trimmed)) {
+      throw new UserInputError('vpnProfile must be an OpenVPN client config (needs "client" and "remote <host> <port>" lines)');
+    }
+    return trimmed;
+  }
+
   /** Store (or clear, with null) the account's OpenVPN client config; setting it routes their space through the VPN. */
   setVpnProfile(id: number, profile: string | null): UserAccount {
     const user = this.findUserById(id);
     if (!user) throw new UserInputError(`no user ${id}`);
-    let stored: string | null = null;
-    if (profile !== null) {
-      if (typeof profile !== "string") throw new UserInputError("vpnProfile must be a string or null");
-      const trimmed = profile.trim();
-      if (trimmed.length > 0) {
-        if (!/^\s*client\b/m.test(trimmed) || !/^\s*remote\s+\S+/m.test(trimmed)) {
-          throw new UserInputError("vpnProfile must be an OpenVPN client config (needs \"client\" and \"remote <host> <port>\" lines)");
-        }
-        stored = trimmed;
-      }
-    }
+    const stored = UserStore.normalizeVpnProfile(profile);
     this.db.prepare("UPDATE users SET vpn_profile = ?, updated_at = ? WHERE id = ?").run(stored, Date.now(), id);
     return this.findUserById(id)!;
   }
@@ -257,7 +259,7 @@ export class UserStore {
   verifyLogin(username: string, password: string): UserAccount | null {
     const row = this.lookupForAuth(username);
     if (!row || row.status !== "active") {
-      verifyPassword(password, (UserStore.timingDummyHash ??= hashPassword("omp-web-timing-dummy", { logN: PASSWORD_HASH_MIN_LOG_N })));
+      verifyPassword(password, (UserStore.timingDummyHash ??= hashPassword("omp-web-timing-dummy", { logN: PASSWORD_HASH_LOG_N })));
       return null;
     }
     return verifyPassword(password, row.passwordHash) ? UserStore.account(row) : null;

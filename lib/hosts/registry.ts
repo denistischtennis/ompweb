@@ -162,6 +162,7 @@ export function rotateLocalHostToken(): string {
     tokenHash: sha256Hex(token),
     createdAt: existing?.createdAt || new Date().toISOString(),
     lastSeenAt: existing?.lastSeenAt ?? null,
+    ownerUserId: existing?.ownerUserId ?? null,
     allowAgentStart: true,
     shareCredentials: false,
   };

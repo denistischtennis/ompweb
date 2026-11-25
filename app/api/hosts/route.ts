@@ -156,8 +156,10 @@ export async function PATCH(req: Request) {
   if (rawOwner !== undefined && viewerScope(req).scoped) return fail("Admin access required", 403);
   // Opening the store would create users.db and flip an open server to auth-required, so consult it only when it exists.
   if (typeof rawOwner === "number" && (!usersDatabaseExists() || !getUserStore().findUserById(rawOwner))) return fail("Unknown owner user", 404);
-  if (body && body.poolId !== undefined) return renamePool(body);
+  if (body && body.poolId !== undefined) return viewerScope(req).scoped ? fail("Admin access required", 403) : renamePool(body);
   if (!body || typeof body.id !== "string" || !body.id) return fail("id is required", 400);
+  // Phase 3: members may only touch hosts they can see; foreign ids answer like unknown ones.
+  if (viewerScope(req).scoped && !canSeeHost(req, body.id)) return fail("Unknown host", 404);
   const isLocal = body.id === "local";
   if (isLocal && body.allowAgentStart !== undefined) return fail("This machine's agent-start setting cannot be changed", 400);
   if (isLocal && body.shareCredentials !== undefined) return fail("This machine's credential sharing cannot be changed", 400);
@@ -211,6 +213,8 @@ export async function DELETE(req: Request) {
   } catch (error) {
     return failFor(error);
   }
+  // Phase 3: members revoke only hosts they can see; foreign ids answer like unknown ones.
+  if (viewerScope(req).scoped && !canSeeHost(req, id)) return fail("Unknown host", 404);
   // A member leaves the cluster first: once its record is gone, no row is left to remove it there.
   try {
     const pools = loadPools();

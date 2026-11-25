@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHost, readHosts, revokeHost, updateHost } from "../hosts/registry";
 import { getAgentDir } from "../omp/paths";
@@ -73,6 +73,12 @@ function writeSpaceFile(username: string, name: string, content: string): string
   mkdirSync(dir, { recursive: true });
   const path = join(dir, name);
   writeFileSync(path, content, { mode: 0o600 });
+  // writeFileSync applies the mode only to newly created files; enforce it on rewrites too.
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Windows has no POSIX mode bits.
+  }
   return path;
 }
 
@@ -183,8 +189,9 @@ export async function stopUserSpace(username: string, run: DockerRunner = nodeDo
   if (hasStagedVpn(username)) await run(["stop", vpnContainerName(username)]).catch(() => undefined);
 }
 
-/** Starts an existing stopped container (unban); false when the user has no container to start. */
+/** Starts an existing stopped space (unban); false when nothing can be started. A staged VPN sidecar starts first: the host container joins its network namespace. */
 export async function startUserSpace(username: string, run: DockerRunner = nodeDockerRunner): Promise<boolean> {
+  if (hasStagedVpn(username) && !(await run(["start", vpnContainerName(username)]).then(() => true, () => false))) return false;
   try {
     await run(["start", hostContainerName(username)]);
     return true;

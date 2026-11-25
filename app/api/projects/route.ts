@@ -151,7 +151,7 @@ export async function POST(req: Request) {
       claimProject(req, projectKeyFor(registered));
       return Response.json({ project: registered });
     }
-    const target = resolveHostOrError(body.hostId);
+    const target = resolveHostOrError(body.hostId, req);
     if ("response" in target) return target.response;
     const { host } = target;
     const result = await host.sessionOps.addProject(cwd, launchConfig);
@@ -162,7 +162,7 @@ export async function POST(req: Request) {
       return Response.json({ project });
     }
     allowFileRoot(result.value.path);
-    claimProject(req, projectKeyFor(result.value));
+    claimProject(req, projectKeyFor({ ...result.value, hostId: LOCAL_HOST_ID }));
     return Response.json({ project: result.value });
   } catch (error) {
     if (error instanceof ProjectPathError) {
@@ -209,22 +209,21 @@ export async function PATCH(req: Request) {
       parsed.push({ cwd, ...parsePresentation(entry) });
     }
 
+    const target = resolveHostOrError(body.hostId, req);
+    if ("response" in target) return target.response;
     // Phase 3 scoping: members may only manage their own (or not-yet-owned) projects; anything else answers like an unknown one.
     for (const item of parsed) {
-      if (!canAddressProject(req, projectKeyFor({ path: item.cwd }))) {
+      if (!canAddressProject(req, projectKeyFor({ path: item.cwd, hostId: target.host.id }))) {
         return Response.json({ error: "Registered project not found", code: "project_not_found" }, { status: 404 });
       }
     }
-
-    const target = resolveHostOrError(body.hostId);
-    if ("response" in target) return target.response;
     const result = await target.host.sessionOps.updateProject(parsed);
     if (!result.ok) return opErrorResponse(result);
     // Only after a successful save: a failed write must not leave an orphaned
     // in-memory browse authorization behind. Never for another host's paths.
     if (target.host.id === LOCAL_HOST_ID) for (const root of result.value.newRoots) allowFileRoot(root);
     const { projects } = result.value;
-    for (const project of projects) claimProject(req, projectKeyFor(project));
+    for (const project of projects) claimProject(req, projectKeyFor({ ...project, hostId: target.host.id }));
     return Response.json({ projects: target.host.id === LOCAL_HOST_ID ? projects : projects.map((project) => ({ ...project, hostId: target.host.id })) });
   } catch (error) {
     if (error instanceof ProjectPathError) {
@@ -254,12 +253,13 @@ export async function DELETE(req: Request) {
     if (!cwd) {
       return Response.json({ error: "Path is required", code: "path_required" }, { status: 400 });
     }
-    // Phase 3 scoping: hiding a project another member owns (or that no one owns yet) is not this member's to do.
-    if (!canAddressProject(req, projectKeyFor({ path: cwd }))) {
+    // Phase 3 scoping: resolve the host first (members may only address their own), then gate on the same identity the write routes store under.
+    const target = resolveHostOrError(body.hostId, req);
+    if ("response" in target) return target.response;
+    // Hiding a project another member owns (or that no one owns yet) is not this member's to do.
+    if (!canAddressProject(req, projectKeyFor({ path: cwd, hostId: target.host.id }))) {
       return Response.json({ error: "Registered project not found", code: "project_not_found" }, { status: 404 });
     }
-    const target = resolveHostOrError(body.hostId);
-    if ("response" in target) return target.response;
     const result = await target.host.sessionOps.hideProject(cwd);
     if (!result.ok) return opErrorResponse(result);
     return Response.json({ success: true });

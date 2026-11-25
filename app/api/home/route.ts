@@ -2,7 +2,7 @@ import { apiErrorResponse, opErrorResponse, resolveWorkspaceHost } from "@/lib/a
 
 export async function GET(request: Request) {
   try {
-    const resolved = await resolveWorkspaceHost(new URL(request.url).searchParams.get("hostId") ?? undefined, null);
+    const resolved = await resolveWorkspaceHost(new URL(request.url).searchParams.get("hostId") ?? undefined, null, { request });
     if ("response" in resolved) return resolved.response;
     const result = await resolved.host.workspaceOps.home();
     return result.ok ? Response.json(result.value) : opErrorResponse(result);

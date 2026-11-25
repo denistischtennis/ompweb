@@ -17,12 +17,14 @@ export interface ViewerScope {
   userId?: number;
 }
 
-/** The scope an owner string (lib/web-auth.ts `requestOwner`) names: only `user:<id>` member accounts restrict a caller; admins and every non-v2 owner see everything. */
+/** The scope an owner string (lib/web-auth.ts `requestOwner`) names: member accounts restrict their caller; admins see everything. A token whose account was deleted stays scoped to that id (deny-all except rows still bearing it). */
 export function scopeFromOwner(owner: string): ViewerScope {
   const match = /^user:(\d+)$/.exec(owner);
   if (!match || !usersDatabaseExists()) return { scoped: false };
-  const user = getUserStore().findUserById(Number(match[1]));
-  return user && user.role === "user" ? { scoped: true, userId: user.id } : { scoped: false };
+  const userId = Number(match[1]);
+  const user = getUserStore().findUserById(userId);
+  if (!user) return { scoped: true, userId };
+  return user.role === "user" ? { scoped: true, userId: user.id } : { scoped: false };
 }
 
 /** The visibility class of a request; `undefined` requests (handlers called without one) are unrestricted. */
@@ -43,11 +45,14 @@ export function canSeeProject(request: Request | undefined, projectKey: string):
   return !scope.scoped || getUserStore().projectOwner(projectKey) === scope.userId;
 }
 
-/** True iff `request` may see a host whose registry record carries `ownerUserId`. Hosts without an owner are invisible to members. */
+/** True iff a viewer scope may address a host whose registry record carries `ownerUserId`. Hosts without an owner are invisible to members. */
+export function hostVisibleToScope(scope: ViewerScope, hostId: string): boolean {
+  return !scope.scoped || loadHosts().find((host) => host.id === hostId)?.ownerUserId === scope.userId;
+}
+
+/** True iff `request` may see a host (via its viewer scope). */
 export function canSeeHost(request: Request | undefined, hostId: string): boolean {
-  const scope = viewerScope(request);
-  if (!scope.scoped) return true;
-  return loadHosts().find((host) => host.id === hostId)?.ownerUserId === scope.userId;
+  return hostVisibleToScope(viewerScope(request), hostId);
 }
 
 /** The shared 404 body for sessions a caller cannot address (same shape as lib/api-utils.ts SESSION_NOT_FOUND). */
@@ -62,9 +67,11 @@ export function guardSession(request: Request | undefined, sessionId: string): R
   return getUserStore().sessionOwner(sessionId) === scope.userId ? undefined : sessionNotFoundResponse();
 }
 
-/** The identity the project routes use for a project: its logical pool key, else its comparable path. */
-export function projectKeyFor(project: { path?: string; projectKey?: string }): string {
-  return project.projectKey ?? comparableProjectPath(project.path ?? "");
+/** The identity the project routes use for a project: its logical pool key, else its comparable path namespaced by the owning host (identical paths on different containers are different projects). */
+export function projectKeyFor(project: { path?: string; projectKey?: string; hostId?: string }): string {
+  if (project.projectKey !== undefined) return project.projectKey;
+  const path = comparableProjectPath(project.path ?? "");
+  return project.hostId === undefined ? path : `${project.hostId}|${path}`;
 }
 
 /** Record `request`'s account as the session's owner; no-op for unrestricted callers (they never gain rows). */
