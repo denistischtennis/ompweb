@@ -157,7 +157,10 @@ export function buildProvisionCommands(username: string, config: UserSpaceConfig
     // (mcp.json holds secrets) and only root can read them and chown the result to omp.
     commands.push(["run", "--rm", "--user", "root", "--entrypoint", "sh", "-v", `${seedPath}:/seed:ro`, "-v", `${hostVolumeName(username)}:/home/omp/.omp/agent`, config.image, "-c", "cp -rn /seed/. /home/omp/.omp/agent/ && chown -R omp:omp /home/omp/.omp/agent"]);
   }
-  const hostRun = ["run", "-d", "--name", hostContainerName(username), "--restart", "unless-stopped"];
+  // Chrome-for-Testing as uid 10000: its crashpad_handler needs CAP_SYS_PTRACE (Docker's default cap set
+  // omits it) and the default seccomp profile blocks the clone/namespace syscalls it uses, so without both
+  // flags the member's browser dies with "chrome_crashpad_handler: --database is required" / SIGTRAP.
+  const hostRun = ["run", "-d", "--name", hostContainerName(username), "--restart", "unless-stopped", "--cap-add", "SYS_PTRACE", "--security-opt", "seccomp=unconfined"];
   if (vpn) hostRun.push("--network", `container:${vpnContainerName(username)}`);
   for (const mount of config.roMounts ?? []) {
     const [src, dst] = mount.split(":");
