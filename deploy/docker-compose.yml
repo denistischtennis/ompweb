@@ -25,20 +25,19 @@ services:
       - "1338:30177" # LAN: http://192.168.1.247:1338 (password-protected)
     environment:
       OMP_WEB_PASSWORD_HASH: ${OMP_WEB_PASSWORD_HASH}
+      # Agent home must be at a path identical on host and container: lib/provision/docker.ts feeds
+      # getAgentDir() to `docker run -v <dir>:/seed`, which the host daemon resolves on the HOST fs — a
+      # named volume isn't visible there, so member seeding silently copied an empty dir. A same-path
+      # bind fixes it. (Overrides ~/.omp/agent; see the ./data bind below.)
+      PI_CODING_AGENT_DIR: /root/ompweb-1338/data/agent
       # Provisioning (lib/provision/docker.ts): active only with both settings below.
       OMP_WEB_HOST_IMAGE: local/ompweb-host:0.7.4-mt.1
       OMP_WEB_PUBLIC_URL: http://192.168.1.247:1338
       # Shared tool binaries + gh login mounted into every user space. Granular src:dst
       OMP_WEB_RO_MOUNTS: /root/projects/ompweb-tools/opt/ida-pro-9.4:/opt/ida-pro-9.4,/root/projects/ompweb-tools/root/.local:/home/omp/.local,/root/projects/ompweb-tools/root/.cache:/home/omp/.cache,/root/projects/ompweb-tools/root/.omp/puppeteer:/home/omp/.omp/puppeteer,/root/projects/ompweb/deploy/gh-hosts.yml:/home/omp/.config/gh/hosts.yml
     volumes:
-      - masteragent:/root/.omp # dedicated server agent home (docker volume), NOT the host CLI /root/.omp
+      - /root/ompweb-1338/data:/root/ompweb-1338/data # bind at the same absolute path (was named volume `masteragent`) so the agent home above is host-resolvable
       - /root/projects:/root/projects # mirrored path so session cwds stay valid
       - /var/run/docker.sock:/var/run/docker.sock # docker-in-docker via host daemon socket
       - ./gh-hosts.yml:/root/.config/gh/hosts.yml:ro # gh login for the private tools repo
 
-volumes:
-  # The master's own agent dir (providers, accounts, host registry, shared skills) lives here so the
-  # server is self-contained and its content is what gets seeded into member spaces. Seed on first setup:
-  #   docker run --rm -v <proj>_masteragent:/dst -v /root/.omp:/src:ro alpine \
-  #     sh -c 'mkdir -p /dst/agent && cp -a /src/agent/{config.yml,models.yml,models.db,omp-web,skills} /dst/agent/'
-  masteragent: {}
