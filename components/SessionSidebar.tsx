@@ -160,6 +160,12 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
     // Physical groups keep existing owner-bound work visible; only creation controls filter members.
     return [...(hosts ?? [THIS_MACHINE]), ...pools.map((pool) => ({ id: `pool:${pool.id}`, label: pool.label }))];
   }, [hosts, pools]);
+  // Generic add-workspace target: this machine when the viewer can address it; otherwise their own host
+  // (a scoped member's visible list holds only their own space — lib/users/access.ts), so local would 404.
+  const defaultPhysicalHostId = useMemo(
+    () => hostList.find((host) => host.id === LOCAL_HOST_ID)?.id ?? hostList.find((host) => !host.id.startsWith("pool:"))?.id ?? LOCAL_HOST_ID,
+    [hostList],
+  );
   const selectedWorkspaceRef = useRef("");
   selectedWorkspaceRef.current = hostProjectKey(selectedHostId, selectedCwd ?? "");
   // Host group headers only exist once a remote host is linked.
@@ -1713,7 +1719,7 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
           label={t("projects.add")}
           title={t("projects.addTitle")}
           onClick={() => {
-            setAddProjectOpen(true, selectedPoolProject ? projectTargetId(selectedPoolProject) : LOCAL_HOST_ID);
+            setAddProjectOpen(true, selectedPoolProject ? projectTargetId(selectedPoolProject) : defaultPhysicalHostId);
             setAddProjectError(null);
           }}
         >
