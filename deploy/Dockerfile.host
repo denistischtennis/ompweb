@@ -26,6 +26,15 @@ RUN apt-get update \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# MCP servers baked in so every member space has them at a stable /usr/local/bin path.
+# Baking beats calling `uvx` at runtime: the shared ~/.cache is mounted read-only, so uvx
+# cannot write its resolution cache; and it removes the /root-vs-/home/omp home mismatch.
+# pubmed pins mcp<2 (its code imports mcp.server.fastmcp, dropped in mcp 2.x).
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
+ && env UV_TOOL_DIR=/usr/local/share/uv UV_TOOL_BIN_DIR=/usr/local/bin uv tool install --python 3.11 --with 'mcp<2' pubmed_mcp_server \
+ && env UV_TOOL_DIR=/usr/local/share/uv UV_TOOL_BIN_DIR=/usr/local/bin uv tool install --python 3.11 ida-mcp \
+ && npm install -g --no-audit --no-fund firecrawl-mcp
+
 # The ompweb package once, globally — never again per user.
 COPY --from=pkg /out/*.tgz /tmp/ompweb.tgz
 RUN npm install -g --no-audit --no-fund /tmp/ompweb.tgz && rm -f /tmp/ompweb.tgz
