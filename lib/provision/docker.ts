@@ -146,7 +146,10 @@ export function buildProvisionCommands(username: string, config: UserSpaceConfig
   }
   if (seedPath) {
     // Fill the volume with the master's defaults; `cp -rn` never overwrites files the user already has.
-    commands.push(["run", "--rm", "-v", `${seedPath}:/seed:ro`, "-v", `${hostVolumeName(username)}:/home/omp/.omp/agent`, config.image, "sh", "-c", "cp -rn /seed/. /home/omp/.omp/agent/ && chown -R omp:omp /home/omp/.omp/agent"]);
+    // The host image's ENTRYPOINT is entrypoint-host.sh (`exec ompweb host "$@"`), so the one-shot
+    // must override it via --entrypoint sh, and it runs --user root: the staged files are mode 0600
+    // (mcp.json holds secrets) and only root can read them and chown the result to omp.
+    commands.push(["run", "--rm", "--user", "root", "--entrypoint", "sh", "-v", `${seedPath}:/seed:ro`, "-v", `${hostVolumeName(username)}:/home/omp/.omp/agent`, config.image, "-c", "cp -rn /seed/. /home/omp/.omp/agent/ && chown -R omp:omp /home/omp/.omp/agent"]);
   }
   const hostRun = ["run", "-d", "--name", hostContainerName(username), "--restart", "unless-stopped"];
   if (vpn) hostRun.push("--network", `container:${vpnContainerName(username)}`);

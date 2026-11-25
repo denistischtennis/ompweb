@@ -13,12 +13,17 @@ FROM ${NODE_IMAGE} AS pkg
 WORKDIR /src
 COPY . /src
 # npm pack runs the package build (prepack) and yields the exact tarball the global install uses.
-RUN npm ci --no-audit --no-fund && npm pack --pack-destination /out
+RUN mkdir -p /out && npm ci --no-audit --no-fund && npm pack --pack-destination /out
 
 FROM ${NODE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git python3 \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
 # The ompweb package once, globally — never again per user.

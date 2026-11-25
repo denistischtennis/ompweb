@@ -13,4 +13,9 @@ if [ -n "${OMP_WEB_HOST_URL:-}" ] && [ -n "${OMP_WEB_HOST_TOKEN:-}" ]; then
   printf '%s\n' "$OMP_WEB_HOST_TOKEN" | ompweb host login --url "$OMP_WEB_HOST_URL"
 fi
 
-exec ompweb host "$@"
+# The daemon dials http:// only with an explicit opt-in (lib/hosts/daemon-link.ts
+# `dialable`): pass --allow-http whenever the provisioned master URL is plain http.
+case "${OMP_WEB_HOST_URL:-}" in
+  http://*) exec ompweb host --allow-http "$@" ;;
+  *) exec ompweb host "$@" ;;
+esac

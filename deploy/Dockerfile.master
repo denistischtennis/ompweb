@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1
+# ompweb MASTER image (fork phase 4): the web server itself, built from this repository.
+# The master serves the site and, via lib/provision/docker.ts, spawns one `ompweb host`
+# container per user (deploy/Dockerfile.host) through the docker CLI. Running inside a
+# container, it reaches the host daemon through the bind-mounted /var/run/docker.sock
+# (docker-in-docker via socket: user spaces become siblings on the same daemon, so host
+# paths in OMP_WEB_RO_MOUNTS resolve identically).
+#
+# Build context: the ompweb repository root.
+#   docker build -f deploy/Dockerfile.master -t ompweb-master:local .
+ARG NODE_IMAGE=node:24-bookworm-slim
+
+FROM ${NODE_IMAGE} AS pkg
+WORKDIR /src
+COPY . /src
+# npm pack runs the package build (prepack) and yields the exact tarball the global install uses.
+RUN mkdir -p /out && npm ci --no-audit --no-fund && npm pack --pack-destination /out
+
+FROM ${NODE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl git python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# docker CLI (static build; newer than the 26.1.5 host daemon, talks to it over the
+# mounted socket via API negotiation): execFile("docker", ...) in lib/provision/docker.ts.
+RUN mkdir -p /usr/local/bin \
+ && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
+    | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
+ && docker --version
+
+# gh CLI: the GitHub agent tools require a logged-in gh on the server machine
+# (lib/github/gh.ts clears GH_TOKEN/GITHUB_TOKEN from the child env, so only the stored
+# login counts). The token file is bind-mounted at runtime, never baked into the image.
+RUN mkdir -p /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/* \
+ && gh --version
+
+# The ompweb package once, globally — built from this repo, not from the npm registry.
+COPY --from=pkg /out/*.tgz /tmp/ompweb.tgz
+RUN npm install -g --allow-scripts=bun --no-audit --no-fund /tmp/ompweb.tgz && rm -f /tmp/ompweb.tgz
+
+# The ompweb-omp binary pinned by omp-runner.json, fetched once with its SHA-256 check
+# and exposed at a stable path so the mounted agent dir never re-downloads it.
+RUN mkdir -p /opt/ompweb/seed \
+ && PI_CODING_AGENT_DIR=/opt/ompweb/seed OMP_WEB_DISABLE_AUTOUPDATE=1 ompweb fetch-omp \
+ && ln -s "$(find /opt/ompweb/seed -type f -name 'ompweb-omp*' -print -quit)" /usr/local/bin/ompweb-omp
+
+ENV OMP_WEB_HOSTNAME=0.0.0.0 \
+    OMP_WEB_NO_OPEN=1 \
+    OMP_WEB_DISABLE_AUTOUPDATE=1 \
+    OMP_WEB_OMP_BIN=/usr/local/bin/ompweb-omp
+
+EXPOSE 30177
+CMD ["ompweb", "--no-open"]
