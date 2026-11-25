@@ -18,7 +18,7 @@ RUN mkdir -p /out && npm ci --no-audit --no-fund && npm pack --pack-destination 
 FROM ${NODE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git python3 \
+ && apt-get install -y --no-install-recommends ca-certificates chromium curl git python3 unzip \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -38,6 +38,12 @@ RUN mkdir -p /opt/ompweb/seed \
 
 # Unprivileged per-user home; the agent dir is the mount point of the user's private state.
 RUN useradd --create-home --uid 10000 omp && mkdir -p /home/omp/.omp/agent && chown -R omp:omp /home/omp/.omp
+
+# Browser for the omp browser tools: Chrome-for-Testing, installed once by puppeteer's own
+# installer into the managed cache location (~/.omp/puppeteer) so user containers never
+# download it; system libraries come from apt's chromium, the agent volume stays state-only.
+RUN npx --yes @puppeteer/browsers install chrome@150.0.7871.24 --path /home/omp/.omp/puppeteer \
+ && chown -R omp:omp /home/omp/.omp/puppeteer
 ENV HOME=/home/omp \
     PI_CODING_AGENT_DIR=/home/omp/.omp/agent \
     OMP_WEB_OMP_BIN=/usr/local/bin/ompweb-omp \
